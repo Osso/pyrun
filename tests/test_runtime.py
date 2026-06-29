@@ -885,6 +885,19 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(result["approval"]["args"]["method"], "POST")
         self.assertEqual(result["approval"]["args"]["url"], "http://127.0.0.1:9/blocked")
 
+    def test_pending_approval_http_to_file_returns_needs_approval_without_creating_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore.pending_approval()
+            target = Path(tmp, "nested", "out.txt")
+            result = store.evaluate(f"http.get('http://127.0.0.1:1/x').to_file({str(target)!r})")
+
+            self.assertEqual(result["type"], "needs_approval")
+            self.assertEqual(result["approval"]["tool"], "http.request")
+            self.assertEqual(result["approval"]["args"]["method"], "GET")
+            self.assertEqual(result["approval"]["args"]["url"], "http://127.0.0.1:1/x")
+            self.assertFalse(target.parent.exists())
+            self.assertFalse(target.exists())
+
     def test_http_post_json_form_body_and_to_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp, "download.txt")

@@ -1466,9 +1466,10 @@ class HttpRequestBuilder:
         return self.run().body
 
     def to_file(self, path: str | os.PathLike[str]) -> str:
+        response = self.run()
         target = Path(path).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(self.run().body)
+        target.write_bytes(response.body)
         return str(target)
 
 

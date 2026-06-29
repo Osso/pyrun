@@ -54,6 +54,23 @@ Available globals:
 - `host.cwd()`, `host.cd(path)`.
 - `fs.read(path)`, `fs.write(path, content)`, `fs.exists(path)`,
   `fs.remove(path)`, `fs.glob(pattern)`.
+- `fs.write_json(path, value, indent=2)`: writes JSON plus a trailing newline.
+- `fs.write_json_lines(path, values)` / `fs.write_jsonl(path, values)`: writes
+  one JSON value per line.
+- `fs.write_csv(path, rows)` / `fs.write_tsv(path, rows)`: writes list rows or
+  dict rows. Dict headers are the ordered union of keys across all rows.
+- `fs.open(path, format=None)`: reads text and parses by explicit format or file
+  extension for `json`, `jsonl`, `csv`, `tsv`, `txt`/`text`, and `toml` when
+  stdlib `tomllib` is available. Unsupported formats raise `ValueError`.
+- `tools.file.replace(path, from_or_options, to=None)`: exact text replacement.
+  By default it requires exactly one match. Options dict supports `from`, `to`,
+  `all`, and `occurrence`.
+- `tmp.file(prefix='tmp', suffix='')` and `tmp.dir(prefix='tmp')`: temporary
+  handles with `cleanup()`. File handles also support `write`, `write_json`,
+  `write_json_lines` / `write_jsonl`, `write_csv`, and `write_tsv`.
+- `http.request(method, url, options=None)` plus `http.get/post/put/patch/delete/head`.
+  Options support `headers`, raw `body`, `json`, and `form`. Builders expose
+  `run()`, `text()`, `json()`, `bytes()`, and `to_file(path)`.
 - `cli.<program>(*args)`: command builder. Uses argv-style execution and no
   shell parsing.
 - `run.<program>(*args)`: immediate command execution.
@@ -85,6 +102,30 @@ cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run
 - Helpers are simple Python objects, not JS proxies.
 - Statement evaluation returns the final trailing expression when present.
 - Print output is captured as `console` lines in completed results.
+- HTTP uses stdlib `urllib.request`; no retry, cookie/session, base URL, or
+  streaming support exists yet.
+- Filesystem helpers cover the first structured-data slice only. YAML is not
+  supported without a future non-stdlib decision.
+
+## Examples
+
+```python
+fs.write_json('data.json', {'ok': True})
+fs.open('data.json')
+
+fs.write_csv('items.csv', [{'name': 'apple'}, {'name': 'pear', 'count': 2}])
+fs.open('items.csv')
+
+tools.file.replace('note.txt', {'from': 'old', 'to': 'new', 'occurrence': 1})
+
+f = tmp.file(prefix='pyrun-', suffix='.jsonl')
+f.write_jsonl([{'id': 1}, {'id': 2}])
+fs.open(str(f))
+f.cleanup()
+
+http.get('http://127.0.0.1:8000/status').text()
+http.post('http://127.0.0.1:8000/items', {'json': {'name': 'apple'}}).json()
+```
 
 ## Tests
 

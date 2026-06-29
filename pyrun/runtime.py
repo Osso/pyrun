@@ -393,6 +393,7 @@ class CommandResult:
     stdout: str
     stderr: str
     exit_code: int
+    upstream_results: tuple[CommandResult, ...] = ()
 
     def text(self) -> str:
         return self.stdout
@@ -1475,6 +1476,25 @@ def http_response_from(status: int, headers: Any, body: bytes) -> HttpResponse:
 _process_ids = itertools.count(1)
 
 
+def validate_command_stream_name(stream: str) -> None:
+    if stream not in {"stdout", "stderr"}:
+        raise ValueError("command stream must be 'stdout' or 'stderr'")
+
+
+def select_command_output(result: CommandResult, stream: str) -> str:
+    validate_command_stream_name(stream)
+    return result.stdout if stream == "stdout" else result.stderr
+
+
+@dataclass(frozen=True)
+class CommandStream:
+    builder: CommandBuilder
+    stream: str = "stdout"
+
+    def __post_init__(self) -> None:
+        validate_command_stream_name(self.stream)
+
+
 @dataclass(frozen=True)
 class CommandBuilder:
     session: Session
@@ -1483,6 +1503,7 @@ class CommandBuilder:
     cwd: Path | None = None
     stdin: str | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
+    stdin_source: CommandStream | CommandResult | None = None
 
     def __call__(self, *args: object) -> CommandBuilder:
         return self._copy(args=self.args + tuple(str(arg) for arg in args))
@@ -1494,8 +1515,29 @@ class CommandBuilder:
         updates = normalize_env_updates(name_or_values, value)
         return self._copy(env_overrides={**self.env_overrides, **updates})
 
+    def stream(self, stream: str = "stdout") -> CommandStream:
+        return CommandStream(self, stream)
+
+    def stdout_stream(self) -> CommandStream:
+        return self.stream("stdout")
+
+    def stderr_stream(self) -> CommandStream:
+        return self.stream("stderr")
+
     def stdin_text(self, text: str) -> CommandBuilder:
-        return self._copy(stdin=text)
+        return self._copy(stdin=text, stdin_source=None)
+
+    def stdin_from(self, source: CommandBuilder | CommandStream | CommandResult | str | bytes, stream: str = "stdout") -> CommandBuilder:
+        validate_command_stream_name(stream)
+        if isinstance(source, CommandBuilder):
+            return self._copy(stdin=None, stdin_source=source.stream(stream))
+        if isinstance(source, CommandStream):
+            return self._copy(stdin=None, stdin_source=source)
+        if isinstance(source, CommandResult):
+            return self._copy(stdin=select_command_output(source, stream), stdin_source=source)
+        if isinstance(source, bytes):
+            return self.stdin_text(source.decode())
+        return self.stdin_text(str(source))
 
     def stdin_file(self, path: str | os.PathLike[str]) -> CommandBuilder:
         return self.stdin_text(self._resolve(path).read_text())
@@ -1514,6 +1556,9 @@ class CommandBuilder:
 
     def run(self) -> CommandResult:
         return self._run(merge_stderr=False)
+
+    def pipe_to(self, next_builder: CommandBuilder, stream: str = "stdout") -> CommandResult:
+        return next_builder.stdin_from(self.stream(stream)).run()
 
     def text(self) -> str:
         return self.run().text()
@@ -1561,9 +1606,10 @@ class CommandBuilder:
         return self.combined_to_file(path)
 
     def spawn(self) -> ProcessHandle:
+        stdin, upstream_results = self._resolve_stdin()
         process = subprocess.Popen(
             [self.program, *self.args],
-            stdin=subprocess.PIPE if self.stdin is not None else None,
+            stdin=subprocess.PIPE if stdin is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1576,14 +1622,16 @@ class CommandBuilder:
             pid=process.pid,
             program=self.program,
             args=self.args,
-            stdin=self.stdin,
+            stdin=stdin,
             process=process,
+            upstream_results=upstream_results,
         )
 
     def _run(self, merge_stderr: bool) -> CommandResult:
+        stdin, upstream_results = self._resolve_stdin()
         completed = subprocess.run(
             [self.program, *self.args],
-            input=self.stdin,
+            input=stdin,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
@@ -1596,7 +1644,16 @@ class CommandBuilder:
             stdout=completed.stdout,
             stderr="" if merge_stderr else completed.stderr,
             exit_code=completed.returncode,
+            upstream_results=upstream_results,
         )
+
+    def _resolve_stdin(self) -> tuple[str | None, tuple[CommandResult, ...]]:
+        if isinstance(self.stdin_source, CommandStream):
+            upstream = self.stdin_source.builder.run()
+            return select_command_output(upstream, self.stdin_source.stream), (upstream,)
+        if isinstance(self.stdin_source, CommandResult):
+            return self.stdin, (self.stdin_source,)
+        return self.stdin, ()
 
     def _subprocess_env(self) -> dict[str, str]:
         return {**os.environ, **self.env_overrides}
@@ -1609,6 +1666,7 @@ class CommandBuilder:
             "cwd": self.cwd,
             "stdin": self.stdin,
             "env_overrides": self.env_overrides,
+            "stdin_source": self.stdin_source,
         }
         values.update(changes)
         return CommandBuilder(**values)
@@ -1628,13 +1686,19 @@ class ProcessHandle:
     args: tuple[str, ...]
     stdin: str | None
     process: subprocess.Popen[str]
+    upstream_results: tuple[CommandResult, ...] = ()
     _result: CommandResult | None = None
 
     def wait(self, timeout: float | None = None) -> CommandResult:
         if self._result is not None:
             return self._result
         stdout, stderr = self.process.communicate(input=self.stdin, timeout=timeout)
-        self._result = CommandResult(stdout=stdout, stderr=stderr, exit_code=self.process.returncode)
+        self._result = CommandResult(
+            stdout=stdout,
+            stderr=stderr,
+            exit_code=self.process.returncode,
+            upstream_results=self.upstream_results,
+        )
         return self._result
 
     def kill(self) -> bool:
@@ -1829,18 +1893,27 @@ def to_json_value(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
         return value
     if isinstance(value, CommandBuilder):
-        return {
+        serialized = {
             "program": value.program,
             "args": list(value.args),
             "cwd": str(value.cwd) if value.cwd is not None else None,
             "env": to_json_value(value.env_overrides),
             "stdin": value.stdin,
         }
+        if value.stdin_source is not None:
+            serialized["stdin_from"] = to_json_value(value.stdin_source)
+        return serialized
+    if isinstance(value, CommandStream):
+        return {
+            "stream": value.stream,
+            "command": to_json_value(value.builder),
+        }
     if isinstance(value, CommandResult):
         return {
             "stdout": value.stdout,
             "stderr": value.stderr,
             "exit_code": value.exit_code,
+            "upstream_results": to_json_value(value.upstream_results),
         }
     if isinstance(value, SearchResult):
         return {

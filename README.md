@@ -176,7 +176,22 @@ cli.python3('-c', 'print(123)').lines()
 cli.python3('-c', 'import json; print(json.dumps({"ok": True}))').json()
 cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()
 cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run()
+
+producer = cli.python3('-c', 'print("hello")')
+consumer = cli.python3('-c', 'import sys; print(sys.stdin.read().upper())')
+consumer.stdin_from(producer).run()
+producer.pipe_to(consumer)
+
+stderr_producer = cli.python3('-c', 'import sys; print("warning", file=sys.stderr)')
+consumer.stdin_from(stderr_producer.stderr_stream()).run()
 ```
+
+`stdin_from(source, stream='stdout')` accepts another `CommandBuilder`, a
+`CommandStream` from `.stream()`, `.stdout_stream()`, or `.stderr_stream()`, an
+existing `CommandResult`, or plain `str`/`bytes`. Builder and stream sources run
+when the downstream command runs. Upstream non-zero exits do not raise by
+default; the downstream `CommandResult.upstream_results` tuple records upstream
+`stdout`, `stderr`, and `exit_code` evidence.
 
 ## Differences from Hostrun
 
@@ -198,6 +213,9 @@ cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run
   install or probe external tools, and most wrappers do not execute until callers
   explicitly call `.run()`, `.text()`, `.json()`, etc. `tools.git.status()` and
   `tools.git.commit()` are the exceptions because they are execution helpers.
+- Command pipeline helpers are capture-then-feed composition, not OS pipe file
+  descriptor streaming. The full upstream output is captured before the
+  downstream command starts.
 
 ## Examples
 

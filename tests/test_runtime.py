@@ -369,6 +369,77 @@ d.cleanup()
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.exit_code, 0)
 
+    def test_command_builder_stdin_from_builder_feeds_stdout_to_next_command(self):
+        session = Session()
+        producer = CommandBuilder(session, sys.executable)("-c", "print('hello stream')")
+        consumer = CommandBuilder(session, sys.executable)(
+            "-c",
+            "import sys; sys.stdout.write(sys.stdin.read().upper())",
+        )
+
+        result = consumer.stdin_from(producer).run()
+
+        self.assertEqual(result.stdout, "HELLO STREAM\n")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(len(result.upstream_results), 1)
+        self.assertEqual(result.upstream_results[0].stdout, "hello stream\n")
+
+    def test_command_builder_stdin_from_stream_can_feed_stderr(self):
+        session = Session()
+        producer = CommandBuilder(session, sys.executable)(
+            "-c",
+            "import sys; print('ignored'); print('from stderr', file=sys.stderr)",
+        )
+        consumer = CommandBuilder(session, sys.executable)(
+            "-c",
+            "import sys; sys.stdout.write(sys.stdin.read().title())",
+        )
+
+        result = consumer.stdin_from(producer.stderr_stream()).run()
+
+        self.assertEqual(result.stdout, "From Stderr\n")
+        self.assertEqual(result.upstream_results[0].stderr, "from stderr\n")
+
+    def test_command_builder_stdin_from_command_result_feeds_selected_stream(self):
+        session = Session()
+        source = CommandBuilder(session, sys.executable)(
+            "-c",
+            "import sys; print('out'); print('err', file=sys.stderr)",
+        ).run()
+        consumer = CommandBuilder(session, sys.executable)(
+            "-c",
+            "import sys; sys.stdout.write(sys.stdin.read() + '!')",
+        )
+
+        result = consumer.stdin_from(source, stream="stderr").run()
+
+        self.assertEqual(result.stdout, "err\n!")
+        self.assertEqual(result.upstream_results[0].stderr, "err\n")
+
+    def test_command_builder_pipe_to_returns_downstream_with_upstream_nonzero_metadata(self):
+        session = Session()
+        producer = CommandBuilder(session, sys.executable)(
+            "-c",
+            "import sys; print('still useful'); sys.exit(7)",
+        )
+        consumer = CommandBuilder(session, sys.executable)(
+            "-c",
+            "import sys; sys.stdout.write(sys.stdin.read().replace('useful', 'visible'))",
+        )
+
+        result = producer.pipe_to(consumer)
+
+        self.assertEqual(result.stdout, "still visible\n")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(len(result.upstream_results), 1)
+        self.assertEqual(result.upstream_results[0].exit_code, 7)
+
+    def test_command_stream_serializes_from_session_evaluation(self):
+        value = self.eval("cli.python3('-c', 'print(1)').stderr_stream()")["value"]
+
+        self.assertEqual(value["stream"], "stderr")
+        self.assertEqual(value["command"]["program"], "python3")
+
     def test_command_builder_returns_json_shape_from_session_evaluation(self):
         value = self.eval("cli.echo('hello').in_('/tmp').env('X_TEST', '1').stdin_text('input')")["value"]
 

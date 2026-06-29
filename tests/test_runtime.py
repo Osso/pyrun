@@ -168,6 +168,114 @@ d.cleanup()
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, "HELLO FROM STDIN")
 
+    def test_command_builder_env_override_is_visible_to_child(self):
+        result = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "import os; print(os.environ['PYRUN_TEST_ENV'])",
+        ).env("PYRUN_TEST_ENV", "visible").run()
+        inherited = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "import os; print(os.environ['PATH'] != '')",
+        ).env({"PYRUN_TEST_ENV": "dict-value"}).run()
+
+        self.assertEqual(result.stdout, "visible\n")
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(inherited.stdout, "True\n")
+
+    def test_command_builder_stdin_file_json_lines_csv_and_tsv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            Path(tmp, "input.txt").write_text("from file")
+            file_result = CommandBuilder(session, sys.executable)("-c", "import sys; print(sys.stdin.read())").stdin_file("input.txt").text()
+            json_result = CommandBuilder(session, sys.executable)("-c", "import json, sys; print(json.load(sys.stdin)['ok'])").stdin_json({"ok": True}).text()
+            lines_result = CommandBuilder(session, sys.executable)("-c", "import sys; print(repr(sys.stdin.read()))").stdin_lines(["a", "b"]).text()
+            csv_result = CommandBuilder(session, sys.executable)("-c", "import sys; print(repr(sys.stdin.read()))").stdin_csv([{"a": 1}, {"b": 2, "a": 3}]).text()
+            tsv_result = CommandBuilder(session, sys.executable)("-c", "import sys; print(repr(sys.stdin.read()))").stdin_tsv([["a", "b"], [1, 2]]).text()
+
+        self.assertEqual(file_result, "from file\n")
+        self.assertEqual(json_result, "True\n")
+        self.assertEqual(lines_result, "'a\\nb\\n'\n")
+        self.assertEqual(csv_result, "'a,b\\n1,\\n3,2\\n'\n")
+        self.assertEqual(tsv_result, "'a\\tb\\n1\\t2\\n'\n")
+
+    def test_command_builder_stderr_and_combined_helpers(self):
+        builder = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "import sys; print('{\"out\": 1}', flush=True); print('{\"err\": 2}', file=sys.stderr)",
+        )
+
+        self.assertEqual(builder.stderr_text(), '{"err": 2}\n')
+        self.assertEqual(builder.stderr_lines(), ['{"err": 2}'])
+        self.assertEqual(builder.stderr_json(), {"err": 2})
+        self.assertEqual(builder.combined_text(), '{"out": 1}\n{"err": 2}\n')
+
+    def test_command_builder_output_redirects_and_tee(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            builder = CommandBuilder(session, sys.executable)(
+                "-c",
+                "import sys; print('out', flush=True); print('err', file=sys.stderr)",
+            )
+            stdout_result = builder.to_file("stdout.txt")
+            stderr_result = builder.stderr_to_file("stderr.txt")
+            combined_result = builder.combined_to_file("combined.txt")
+            tee_result = builder.tee("tee.txt")
+            stderr_tee_result = builder.stderr_tee("stderr-tee.txt")
+            combined_tee_result = builder.combined_tee("combined-tee.txt")
+
+            stdout_text = Path(tmp, "stdout.txt").read_text()
+            stderr_text = Path(tmp, "stderr.txt").read_text()
+            combined_text = Path(tmp, "combined.txt").read_text()
+            tee_text = Path(tmp, "tee.txt").read_text()
+            stderr_tee_text = Path(tmp, "stderr-tee.txt").read_text()
+            combined_tee_text = Path(tmp, "combined-tee.txt").read_text()
+
+        self.assertEqual(stdout_text, "out\n")
+        self.assertEqual(stderr_text, "err\n")
+        self.assertEqual(combined_text, "out\nerr\n")
+        self.assertEqual(tee_text, "out\n")
+        self.assertEqual(stderr_tee_text, "err\n")
+        self.assertEqual(combined_tee_text, "out\nerr\n")
+        self.assertEqual(stdout_result.stdout, "out\n")
+        self.assertEqual(stderr_result.stderr, "err\n")
+        self.assertEqual(combined_result.stdout, "out\nerr\n")
+        self.assertEqual(tee_result.stderr, "err\n")
+        self.assertEqual(stderr_tee_result.stdout, "out\n")
+        self.assertEqual(combined_tee_result.stdout, "out\nerr\n")
+
+    def test_command_builder_spawn_wait_text_json_and_kill(self):
+        handle = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "import json; print(json.dumps({'ok': True}))",
+        ).spawn()
+        waited = handle.wait(timeout=5)
+        text_handle = CommandBuilder(Session(), sys.executable)("-c", "print('a'); print('b')").spawn()
+        json_handle = CommandBuilder(Session(), sys.executable)("-c", "import json; print(json.dumps({'n': 3}))").spawn()
+        sleeper = CommandBuilder(Session(), sys.executable)("-c", "import time; time.sleep(30)").spawn()
+        killed = sleeper.kill()
+        killed_result = sleeper.wait(timeout=5)
+
+        self.assertGreater(handle.pid, 0)
+        self.assertEqual(handle.program, sys.executable)
+        self.assertEqual(waited.stdout, '{"ok": true}\n')
+        self.assertEqual(waited.exit_code, 0)
+        self.assertEqual(text_handle.text(timeout=5), "a\nb\n")
+        self.assertEqual(json_handle.json(timeout=5), {"n": 3})
+        self.assertTrue(killed)
+        self.assertNotEqual(killed_result.exit_code, 0)
+
+    def test_command_builder_does_not_parse_shell_syntax(self):
+        result = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "import sys; print(sys.argv[1])",
+            "hello; echo hacked",
+        ).run()
+
+        self.assertEqual(result.stdout, "hello; echo hacked\n")
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.exit_code, 0)
+
     def test_print_output_is_captured_as_console(self):
         result = self.eval("print('hello')\n7")
 

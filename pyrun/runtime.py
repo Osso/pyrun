@@ -5,6 +5,7 @@ import contextlib
 import csv
 import glob as glob_module
 import io
+import itertools
 import json
 import os
 import shutil
@@ -164,9 +165,14 @@ def write_json_lines_file(path: Path, values: list[Any]) -> None:
 
 def write_delimited_file(path: Path, rows: list[Any], delimiter: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
-        writer = csv.writer(handle, delimiter=delimiter, lineterminator="\n")
-        write_delimited_rows(writer, rows)
+    path.write_text(serialize_delimited_rows(rows, delimiter), newline="")
+
+
+def serialize_delimited_rows(rows: list[Any], delimiter: str) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=delimiter, lineterminator="\n")
+    write_delimited_rows(writer, rows)
+    return output.getvalue()
 
 
 def write_delimited_rows(writer: csv.writer, rows: list[Any]) -> None:
@@ -464,6 +470,9 @@ def http_response_from(status: int, headers: Any, body: bytes) -> HttpResponse:
     return HttpResponse(status=status, headers={str(key): str(value) for key, value in headers}, body=body)
 
 
+_process_ids = itertools.count(1)
+
+
 @dataclass(frozen=True)
 class CommandBuilder:
     session: Session
@@ -471,49 +480,38 @@ class CommandBuilder:
     args: tuple[str, ...] = ()
     cwd: Path | None = None
     stdin: str | None = None
+    env_overrides: dict[str, str] = field(default_factory=dict)
 
     def __call__(self, *args: object) -> CommandBuilder:
-        return CommandBuilder(
-            session=self.session,
-            program=self.program,
-            args=self.args + tuple(str(arg) for arg in args),
-            cwd=self.cwd,
-            stdin=self.stdin,
-        )
+        return self._copy(args=self.args + tuple(str(arg) for arg in args))
 
     def in_(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
-        return CommandBuilder(
-            session=self.session,
-            program=self.program,
-            args=self.args,
-            cwd=self._resolve(cwd),
-            stdin=self.stdin,
-        )
+        return self._copy(cwd=self._resolve(cwd))
+
+    def env(self, name_or_values: str | dict[Any, Any], value: object | None = None) -> CommandBuilder:
+        updates = normalize_env_updates(name_or_values, value)
+        return self._copy(env_overrides={**self.env_overrides, **updates})
 
     def stdin_text(self, text: str) -> CommandBuilder:
-        return CommandBuilder(
-            session=self.session,
-            program=self.program,
-            args=self.args,
-            cwd=self.cwd,
-            stdin=text,
-        )
+        return self._copy(stdin=text)
+
+    def stdin_file(self, path: str | os.PathLike[str]) -> CommandBuilder:
+        return self.stdin_text(self._resolve(path).read_text())
+
+    def stdin_json(self, value: Any) -> CommandBuilder:
+        return self.stdin_text(json.dumps(value) + "\n")
+
+    def stdin_lines(self, lines: list[Any]) -> CommandBuilder:
+        return self.stdin_text("\n".join(str(line) for line in lines) + "\n")
+
+    def stdin_csv(self, rows: list[Any]) -> CommandBuilder:
+        return self.stdin_text(serialize_delimited_rows(rows, ","))
+
+    def stdin_tsv(self, rows: list[Any]) -> CommandBuilder:
+        return self.stdin_text(serialize_delimited_rows(rows, "\t"))
 
     def run(self) -> CommandResult:
-        completed = subprocess.run(
-            [self.program, *self.args],
-            input=self.stdin,
-            text=True,
-            capture_output=True,
-            cwd=self.cwd or self.session.cwd,
-            shell=False,
-            check=False,
-        )
-        return CommandResult(
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-            exit_code=completed.returncode,
-        )
+        return self._run(merge_stderr=False)
 
     def text(self) -> str:
         return self.run().text()
@@ -524,11 +522,141 @@ class CommandBuilder:
     def json(self) -> Any:
         return self.run().json()
 
+    def stderr_text(self) -> str:
+        return self.run().stderr
+
+    def stderr_lines(self) -> list[str]:
+        return self.stderr_text().splitlines()
+
+    def stderr_json(self) -> Any:
+        return json.loads(self.stderr_text())
+
+    def combined_text(self) -> str:
+        return self._run(merge_stderr=True).stdout
+
+    def to_file(self, path: str | os.PathLike[str]) -> CommandResult:
+        result = self.run()
+        write_text_file(self._resolve(path), result.stdout)
+        return result
+
+    def stderr_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
+        result = self.run()
+        write_text_file(self._resolve(path), result.stderr)
+        return result
+
+    def combined_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
+        result = self._run(merge_stderr=True)
+        write_text_file(self._resolve(path), result.stdout)
+        return result
+
+    def tee(self, path: str | os.PathLike[str]) -> CommandResult:
+        return self.to_file(path)
+
+    def stderr_tee(self, path: str | os.PathLike[str]) -> CommandResult:
+        return self.stderr_to_file(path)
+
+    def combined_tee(self, path: str | os.PathLike[str]) -> CommandResult:
+        return self.combined_to_file(path)
+
+    def spawn(self) -> ProcessHandle:
+        process = subprocess.Popen(
+            [self.program, *self.args],
+            stdin=subprocess.PIPE if self.stdin is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=self.cwd or self.session.cwd,
+            env=self._subprocess_env(),
+            shell=False,
+        )
+        return ProcessHandle(
+            id=next(_process_ids),
+            pid=process.pid,
+            program=self.program,
+            args=self.args,
+            stdin=self.stdin,
+            process=process,
+        )
+
+    def _run(self, merge_stderr: bool) -> CommandResult:
+        completed = subprocess.run(
+            [self.program, *self.args],
+            input=self.stdin,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+            cwd=self.cwd or self.session.cwd,
+            env=self._subprocess_env(),
+            shell=False,
+            check=False,
+        )
+        return CommandResult(
+            stdout=completed.stdout,
+            stderr="" if merge_stderr else completed.stderr,
+            exit_code=completed.returncode,
+        )
+
+    def _subprocess_env(self) -> dict[str, str]:
+        return {**os.environ, **self.env_overrides}
+
+    def _copy(self, **changes: Any) -> CommandBuilder:
+        values = {
+            "session": self.session,
+            "program": self.program,
+            "args": self.args,
+            "cwd": self.cwd,
+            "stdin": self.stdin,
+            "env_overrides": self.env_overrides,
+        }
+        values.update(changes)
+        return CommandBuilder(**values)
+
     def _resolve(self, path: str | os.PathLike[str]) -> Path:
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = self.session.cwd / candidate
         return candidate.resolve()
+
+
+@dataclass
+class ProcessHandle:
+    id: int
+    pid: int
+    program: str
+    args: tuple[str, ...]
+    stdin: str | None
+    process: subprocess.Popen[str]
+    _result: CommandResult | None = None
+
+    def wait(self, timeout: float | None = None) -> CommandResult:
+        if self._result is not None:
+            return self._result
+        stdout, stderr = self.process.communicate(input=self.stdin, timeout=timeout)
+        self._result = CommandResult(stdout=stdout, stderr=stderr, exit_code=self.process.returncode)
+        return self._result
+
+    def kill(self) -> bool:
+        if self.process.poll() is not None:
+            return False
+        self.process.kill()
+        return True
+
+    def text(self, timeout: float | None = None) -> str:
+        return self.wait(timeout).text()
+
+    def lines(self, timeout: float | None = None) -> list[str]:
+        return self.wait(timeout).lines()
+
+    def json(self, timeout: float | None = None) -> Any:
+        return self.wait(timeout).json()
+
+
+def normalize_env_updates(name_or_values: str | dict[Any, Any], value: object | None) -> dict[str, str]:
+    if isinstance(name_or_values, dict):
+        return {str(key): str(item) for key, item in name_or_values.items()}
+    if value is None:
+        raise ValueError("env requires a value when name is provided")
+    return {str(name_or_values): str(value)}
 
 
 class CommandNamespace:
@@ -622,6 +750,13 @@ def to_json_value(value: Any) -> Any:
             "stdout": value.stdout,
             "stderr": value.stderr,
             "exit_code": value.exit_code,
+        }
+    if isinstance(value, ProcessHandle):
+        return {
+            "id": value.id,
+            "pid": value.pid,
+            "program": value.program,
+            "args": list(value.args),
         }
     if isinstance(value, HttpResponse):
         return {

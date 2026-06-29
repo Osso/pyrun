@@ -35,6 +35,17 @@ Each output line is either a completed evaluation:
 {"type":"completed","executed":"1 + 2","console":[],"value":3}
 ```
 
+When using a pending-approval `SessionStore`, side-effect helpers return a
+`needs_approval` result instead of executing:
+
+```json
+{"type":"needs_approval","executed":"fs.write('note.txt', 'hi')","console":[],"approval":{"id":"approval-1","tool":"fs.write","summary":"Write /tmp/note.txt","args":{"path":"/tmp/note.txt"}}}
+```
+
+The JSONL adapter constructs the default auto-approve store, matching the
+`pyrun-mcp`/`hostrun-mcp` style: side effects execute unless library callers opt
+into pending approval.
+
 or an error shape for invalid requests or evaluation failures:
 
 ```json
@@ -76,12 +87,33 @@ Tool input schema:
 
 Successful `tools/call` responses include `content` with pretty-printed JSON and
 `structuredContent.result` with the raw JSON-compatible Pyrun result. Unknown
-tools and invalid params return `isError: true` tool results.
+tools and invalid params return `isError: true` tool results. The MCP stdio
+server also uses an auto-approve `SessionStore`, so filesystem writes, commands,
+HTTP requests, and temporary-file operations execute by default.
 
 ## Runtime API
 
 Sessions are persistent and keyed by `session_id`. If omitted, the default
 session is named `default`.
+
+Library callers can choose approval behavior:
+
+```python
+from pyrun.runtime import SessionStore
+
+auto = SessionStore()                  # default: side effects execute
+also_auto = SessionStore.new_auto_approve()
+pending = SessionStore.pending_approval()
+# equivalent: SessionStore(auto_approve=False)
+```
+
+Pending mode allows read-only helpers and session-local state changes such as
+`ctx` updates or `host.cd(...)`, but gates host side effects. Gated operations
+raise internally and are caught by `SessionStore.evaluate`, which returns a
+`needs_approval` result. Gated tools include `fs.write`, structured fs writers,
+`fs.remove`, `tools.file.replace/patch` writes, command `.run()`/`.spawn()`, HTTP
+request execution, HTTP downloads, and temporary file/directory create, write,
+and cleanup operations.
 
 ```python
 ctx.count = 1
@@ -237,7 +269,10 @@ default; the downstream `CommandResult.upstream_results` tuple records upstream
 ## Differences from Hostrun
 
 - Runtime language is Python instead of QuickJS JavaScript.
-- This prototype does not implement approval gates or sandboxing.
+- Approval gating exists for runtime helper side effects, but it is not a
+  sandbox. Python code itself still executes in-process and is not isolated;
+  malicious code can use Python stdlib APIs directly unless the caller provides
+  an external sandbox.
 - Helpers are simple Python objects and namespaces, not JS proxies or patched
   builtins. Use `text.lines(value)` or `hr(value).lines()` instead of JS-style
   prototype methods on every string/list/object.

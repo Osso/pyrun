@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from pyrun.runtime import SessionStore
 
@@ -66,6 +68,23 @@ class McpHandlerTests(unittest.TestCase):
 
     def test_initialized_notification_returns_no_response(self):
         self.assertIsNone(self.server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+
+    def test_default_server_store_auto_approves_side_effects(self):
+        from pyrun.mcp import McpServer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp, "note.txt")
+            server = McpServer()
+            response = server.handle({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "pyrun_eval", "arguments": {"code": f"fs.write({str(target)!r}, 'hello')"}},
+            })
+
+            result = response["result"]["structuredContent"]["result"]
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(target.read_text(), "hello")
 
 
 class McpFramingTests(unittest.TestCase):

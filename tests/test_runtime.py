@@ -61,6 +61,42 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(removed)
         self.assertFalse(missing)
 
+    def test_pending_approval_fs_write_returns_needs_approval_without_creating_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore.pending_approval()
+            store.evaluate(f"host.cd({tmp!r})")
+            result = store.evaluate("print('before')\nfs.write('note.txt', 'hello')")
+
+            self.assertEqual(result["type"], "needs_approval")
+            self.assertEqual(result["executed"], "print('before')\nfs.write('note.txt', 'hello')")
+            self.assertEqual(result["console"], ["before"])
+            self.assertEqual(result["approval"]["tool"], "fs.write")
+            self.assertEqual(result["approval"]["args"]["path"], str(Path(tmp, "note.txt")))
+            self.assertFalse(Path(tmp, "note.txt").exists())
+
+    def test_pending_approval_command_run_returns_needs_approval_without_execution(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp, "created.txt")
+            store = SessionStore(auto_approve=False)
+            script = f"from pathlib import Path; Path({str(target)!r}).write_text('ran')"
+            code = f"run.python3('-c', {script!r}).run()"
+            result = store.evaluate(code)
+
+            self.assertEqual(result["type"], "needs_approval")
+            self.assertEqual(result["approval"]["tool"], "cli.python3")
+            self.assertEqual(result["approval"]["args"]["program"], "python3")
+            self.assertFalse(target.exists())
+
+    def test_pending_approval_read_only_fs_and_ctx_still_work(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "note.txt").write_text("hello")
+            store = SessionStore.pending_approval()
+            store.evaluate(f"host.cd({tmp!r})")
+            result = store.evaluate("ctx.answer = 42\n[fs.read('note.txt'), fs.exists('note.txt'), ctx.answer]")
+
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(result["value"], ["hello", True, 42])
+
     def test_fs_write_and_open_json_jsonl_csv_tsv_text(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.eval(f"host.cd({tmp!r})")
@@ -839,6 +875,15 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(text, "hello")
         self.assertEqual(data, {"ok": True})
         self.assertEqual(body_bytes, [104, 101, 108, 108, 111])
+
+    def test_pending_approval_http_request_returns_needs_approval_without_request(self):
+        store = SessionStore.pending_approval()
+        result = store.evaluate("http.post('http://127.0.0.1:9/blocked', {'json': {'a': 1}}).run()")
+
+        self.assertEqual(result["type"], "needs_approval")
+        self.assertEqual(result["approval"]["tool"], "http.request")
+        self.assertEqual(result["approval"]["args"]["method"], "POST")
+        self.assertEqual(result["approval"]["args"]["url"], "http://127.0.0.1:9/blocked")
 
     def test_http_post_json_form_body_and_to_file(self):
         with tempfile.TemporaryDirectory() as tmp:

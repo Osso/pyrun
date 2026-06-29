@@ -405,10 +405,18 @@ class CommandResult:
         return json.loads(self.stdout)
 
 
+class ApprovalRequired(Exception):
+    def __init__(self, approval: dict[str, Any]) -> None:
+        super().__init__(approval.get("summary", "approval required"))
+        self.approval = approval
+
+
 @dataclass
 class Session:
     cwd: Path = field(default_factory=lambda: Path.cwd())
     ctx: AttrDict = field(default_factory=AttrDict)
+    auto_approve: bool = True
+    approval_counter: int = 0
 
     def build_globals(self) -> dict[str, Any]:
         host = Host(self)
@@ -423,7 +431,7 @@ class Session:
             "run": run,
             "tools": Tools(self),
             "tmp": TempNamespace(self),
-            "http": HttpNamespace(),
+            "http": HttpNamespace(self),
             "fd": FdNamespace(self),
             "rg": RgNamespace(self),
             "sqlite": SqliteNamespace(self),
@@ -433,6 +441,17 @@ class Session:
             "obj": ObjNamespace(),
             "hr": hr,
         }
+
+    def require_approval(self, tool: str, summary: str, args: dict[str, Any]) -> None:
+        if self.auto_approve:
+            return
+        self.approval_counter += 1
+        raise ApprovalRequired({
+            "id": f"approval-{self.approval_counter}",
+            "tool": tool,
+            "summary": summary,
+            "args": to_json_value(args),
+        })
 
 
 class Host:
@@ -464,27 +483,26 @@ class FileSystem:
         return self._resolve(path).read_text()
 
     def write(self, path: str | os.PathLike[str], content: str) -> bool:
-        write_text_file(self._resolve(path), content)
+        target = self._resolve(path)
+        approve_fs_write(self._session, target)
+        write_text_file(target, content)
         return True
 
     def write_json(self, path: str | os.PathLike[str], value: Any, indent: int = 2) -> bool:
-        write_json_file(self._resolve(path), value, indent)
-        return True
+        return self.write(path, json.dumps(value, indent=indent) + "\n")
 
     def write_json_lines(self, path: str | os.PathLike[str], values: list[Any]) -> bool:
-        write_json_lines_file(self._resolve(path), values)
-        return True
+        lines = (json.dumps(value) for value in values)
+        return self.write(path, "\n".join(lines) + ("\n" if values else ""))
 
     def write_jsonl(self, path: str | os.PathLike[str], values: list[Any]) -> bool:
         return self.write_json_lines(path, values)
 
     def write_csv(self, path: str | os.PathLike[str], rows: list[Any]) -> bool:
-        write_delimited_file(self._resolve(path), rows, ",")
-        return True
+        return self.write(path, serialize_delimited_rows(rows, ","))
 
     def write_tsv(self, path: str | os.PathLike[str], rows: list[Any]) -> bool:
-        write_delimited_file(self._resolve(path), rows, "\t")
-        return True
+        return self.write(path, serialize_delimited_rows(rows, "\t"))
 
     def open(self, path: str | os.PathLike[str], format: str | None = None) -> Any:
         return open_data_file(self._resolve(path), format)
@@ -494,6 +512,7 @@ class FileSystem:
 
     def remove(self, path: str | os.PathLike[str]) -> bool:
         target = self._resolve(path)
+        self._session.require_approval("fs.remove", f"Remove {target}", {"path": str(target)})
         target.unlink()
         return True
 
@@ -506,6 +525,10 @@ class FileSystem:
         if not candidate.is_absolute():
             candidate = self._session.cwd / candidate
         return candidate.resolve()
+
+
+def approve_fs_write(session: Session, path: Path) -> None:
+    session.require_approval("fs.write", f"Write {path}", {"path": str(path)})
 
 
 def write_text_file(path: Path, content: str) -> None:
@@ -644,7 +667,8 @@ class FileTools:
         options = normalize_replace_options(from_or_options, to)
         original = target.read_text()
         replaced, count = replace_text(original, options)
-        target.write_text(replaced)
+        approve_fs_write(self._session, target)
+        write_text_file(target, replaced)
         return {"replacements": count}
 
     def patch(self, path_or_patch: str | os.PathLike[str], maybe_patch: str | None = None) -> list[dict[str, Any]]:
@@ -655,6 +679,7 @@ class FileTools:
         target = self._resolve(patch.path)
         original = [] if patch.is_new else target.read_text().splitlines(keepends=True)
         updated = apply_hunks(original, patch.hunks, str(patch.path))
+        approve_fs_write(self._session, target)
         write_text_file(target, "".join(updated))
         return {"path": str(target), "hunks": len(patch.hunks)}
 
@@ -1264,22 +1289,25 @@ class TempNamespace:
         self._session = session
 
     def file(self, prefix: str = "tmp", suffix: str = "") -> TmpFile:
-        return TmpFile.reserve(prefix, suffix)
+        self._session.require_approval("tmp.file", "Create temporary file", {"prefix": prefix, "suffix": suffix})
+        return TmpFile.reserve(self._session, prefix, suffix)
 
     def dir(self, prefix: str = "tmp") -> TmpDir:
-        return TmpDir.create(prefix)
+        self._session.require_approval("tmp.dir", "Create temporary directory", {"prefix": prefix})
+        return TmpDir.create(self._session, prefix)
 
 
 @dataclass
 class TmpFile:
     path: Path
+    session: Session = field(repr=False)
 
     @classmethod
-    def reserve(cls, prefix: str, suffix: str) -> TmpFile:
+    def reserve(cls, session: Session, prefix: str, suffix: str) -> TmpFile:
         handle = tempfile.NamedTemporaryFile(prefix=prefix, suffix=suffix, delete=True)
         path = Path(handle.name)
         handle.close()
-        return cls(path)
+        return cls(path, session)
 
     def __str__(self) -> str:
         return str(self.path)
@@ -1288,40 +1316,40 @@ class TmpFile:
         return f"TmpFile({self.path!s})"
 
     def cleanup(self) -> bool:
+        self.session.require_approval("tmp.file.cleanup", f"Remove temporary file {self.path}", {"path": str(self.path)})
         self.path.unlink(missing_ok=True)
         return True
 
     def write(self, content: str) -> bool:
+        approve_fs_write(self.session, self.path)
         write_text_file(self.path, content)
         return True
 
     def write_json(self, value: Any, indent: int = 2) -> bool:
-        write_json_file(self.path, value, indent)
-        return True
+        return self.write(json.dumps(value, indent=indent) + "\n")
 
     def write_json_lines(self, values: list[Any]) -> bool:
-        write_json_lines_file(self.path, values)
-        return True
+        lines = (json.dumps(value) for value in values)
+        return self.write("\n".join(lines) + ("\n" if values else ""))
 
     def write_jsonl(self, values: list[Any]) -> bool:
         return self.write_json_lines(values)
 
     def write_csv(self, rows: list[Any]) -> bool:
-        write_delimited_file(self.path, rows, ",")
-        return True
+        return self.write(serialize_delimited_rows(rows, ","))
 
     def write_tsv(self, rows: list[Any]) -> bool:
-        write_delimited_file(self.path, rows, "\t")
-        return True
+        return self.write(serialize_delimited_rows(rows, "\t"))
 
 
 @dataclass
 class TmpDir:
     path: Path
+    session: Session = field(repr=False)
 
     @classmethod
-    def create(cls, prefix: str) -> TmpDir:
-        return cls(Path(tempfile.mkdtemp(prefix=prefix)))
+    def create(cls, session: Session, prefix: str) -> TmpDir:
+        return cls(Path(tempfile.mkdtemp(prefix=prefix)), session)
 
     def __str__(self) -> str:
         return str(self.path)
@@ -1330,13 +1358,17 @@ class TmpDir:
         return f"TmpDir({self.path!s})"
 
     def cleanup(self) -> bool:
+        self.session.require_approval("tmp.dir.cleanup", f"Remove temporary directory {self.path}", {"path": str(self.path)})
         shutil.rmtree(self.path, ignore_errors=True)
         return True
 
 
 class HttpNamespace:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
     def request(self, method: str, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
-        return HttpRequestBuilder(method.upper(), url, options or {})
+        return HttpRequestBuilder(self._session, method.upper(), url, options or {})
 
     def get(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
         return self.request("GET", url, options)
@@ -1357,23 +1389,24 @@ class HttpNamespace:
         return self.request("HEAD", url, options)
 
     def session(self, options: dict[str, Any] | None = None) -> HttpClient:
-        return HttpClient.from_options(options or {})
+        return HttpClient.from_options(self._session, options or {})
 
 
 @dataclass(frozen=True)
 class HttpClient:
+    session: Session
     base_url: str | None
     headers: dict[str, str]
 
     @classmethod
-    def from_options(cls, options: dict[str, Any]) -> HttpClient:
+    def from_options(cls, session: Session, options: dict[str, Any]) -> HttpClient:
         headers = {str(key): str(value) for key, value in options.get("headers", {}).items()}
         base_url = options.get("base_url")
-        return cls(str(base_url) if base_url is not None else None, headers)
+        return cls(session, str(base_url) if base_url is not None else None, headers)
 
     def request(self, method: str, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
         merged = merge_http_options(self.headers, options or {})
-        return HttpRequestBuilder(method.upper(), join_base_url(self.base_url, url), merged)
+        return HttpRequestBuilder(self.session, method.upper(), join_base_url(self.base_url, url), merged)
 
     def get(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
         return self.request("GET", url, options)
@@ -1409,11 +1442,13 @@ def join_base_url(base_url: str | None, url: str) -> str:
 
 @dataclass(frozen=True)
 class HttpRequestBuilder:
+    session: Session
     method: str
     url: str
     options: dict[str, Any]
 
     def run(self) -> HttpResponse:
+        self.session.require_approval("http.request", f"{self.method} {self.url}", {"method": self.method, "url": self.url})
         request = build_url_request(self.method, self.url, self.options)
         try:
             with urllib.request.urlopen(request) as response:
@@ -1606,6 +1641,7 @@ class CommandBuilder:
         return self.combined_to_file(path)
 
     def spawn(self) -> ProcessHandle:
+        self._require_approval()
         stdin, upstream_results = self._resolve_stdin()
         process = subprocess.Popen(
             [self.program, *self.args],
@@ -1628,6 +1664,7 @@ class CommandBuilder:
         )
 
     def _run(self, merge_stderr: bool) -> CommandResult:
+        self._require_approval()
         stdin, upstream_results = self._resolve_stdin()
         completed = subprocess.run(
             [self.program, *self.args],
@@ -1645,6 +1682,17 @@ class CommandBuilder:
             stderr="" if merge_stderr else completed.stderr,
             exit_code=completed.returncode,
             upstream_results=upstream_results,
+        )
+
+    def _require_approval(self) -> None:
+        self.session.require_approval(
+            f"cli.{Path(self.program).name}",
+            "Run command " + " ".join([self.program, *self.args]),
+            {
+                "program": self.program,
+                "args": list(self.args),
+                "cwd": str(self.cwd or self.session.cwd),
+            },
         )
 
     def _resolve_stdin(self) -> tuple[str | None, tuple[CommandResult, ...]]:
@@ -1827,8 +1875,17 @@ class ImmediateCommand:
 
 
 class SessionStore:
-    def __init__(self) -> None:
+    def __init__(self, auto_approve: bool = True) -> None:
+        self._auto_approve = auto_approve
         self._sessions: dict[str, Session] = {}
+
+    @classmethod
+    def pending_approval(cls) -> SessionStore:
+        return cls(auto_approve=False)
+
+    @classmethod
+    def new_auto_approve(cls) -> SessionStore:
+        return cls(auto_approve=True)
 
     def evaluate(self, code: str, session_id: str = "default") -> dict[str, Any]:
         session = self._session(session_id)
@@ -1836,6 +1893,13 @@ class SessionStore:
         try:
             with contextlib.redirect_stdout(console):
                 value = evaluate_python(code, session.build_globals())
+        except ApprovalRequired as exc:
+            return {
+                "type": "needs_approval",
+                "executed": code,
+                "console": console_lines(console),
+                "approval": exc.approval,
+            }
         except Exception as exc:  # noqa: BLE001 - error is returned to JSONL caller.
             return {
                 "type": "error",
@@ -1853,7 +1917,7 @@ class SessionStore:
         if not session_id:
             raise ValueError("session_id must not be empty")
         if session_id not in self._sessions:
-            self._sessions[session_id] = Session()
+            self._sessions[session_id] = Session(auto_approve=self._auto_approve)
         return self._sessions[session_id]
 
 

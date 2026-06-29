@@ -1,5 +1,7 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from pyrun.jsonl import handle_line
 from pyrun.runtime import SessionStore
@@ -59,6 +61,14 @@ class JsonlProtocolTests(unittest.TestCase):
         self.assertEqual(command_result["stdout"], "123\n")
         self.assertEqual(http_builder["url"], "http://example.invalid")
         self.assertEqual(wrapped, {"wrapped": {"a": 1}})
+
+    def test_jsonl_store_defaults_to_auto_approve_for_side_effects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp, "note.txt")
+            result = self.handle(json.dumps({"code": f"fs.write({str(target)!r}, 'hello')"}))
+
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(target.read_text(), "hello")
 
 
 if __name__ == "__main__":

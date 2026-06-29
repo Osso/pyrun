@@ -427,6 +427,7 @@ d.cleanup()
         code = """
 [
     text.lines('a\\nb\\nc', 2, 3),
+    text.lines('a\\nb\\nc', 2),
     text.range('a\\nb\\nc', 2, 3),
     text.range('a\\nb\\nc', 2),
     text.line_count('a\\nb\\nc'),
@@ -456,13 +457,14 @@ d.cleanup()
         result = self.eval(code)["value"]
 
         self.assertEqual(result[0], ["b", "c"])
-        self.assertEqual(result[1], ["b", "c"])
+        self.assertEqual(result[1], ["b"])
         self.assertEqual(result[2], ["b", "c"])
-        self.assertEqual(result[3:21], [3, 3, ["a", "b"], ["b", "c"], ["a", "b", "c"], ["one", "two", "three"], "hi", "hi", "ONE two ONE", {"a": 1}, [{"a": 1}, {"a": 2}], [{"a": 1}, {"a": 2}], "hi", "HI", ["a", "b"], 2, 2, [195, 169]])
-        self.assertEqual(result[21], "a,b\n1,\n2,3\n")
-        self.assertEqual(result[22], "a\tb\n1\t2\n")
-        self.assertEqual(result[23], [{"a": "1", "b": "2"}])
+        self.assertEqual(result[3], ["b"])
+        self.assertEqual(result[4:22], [3, 3, ["a", "b"], ["b", "c"], ["a", "b", "c"], ["one", "two", "three"], "hi", "hi", "ONE two ONE", {"a": 1}, [{"a": 1}, {"a": 2}], [{"a": 1}, {"a": 2}], "hi", "HI", ["a", "b"], 2, 2, [195, 169]])
+        self.assertEqual(result[22], "a,b\n1,\n2,3\n")
+        self.assertEqual(result[23], "a\tb\n1\t2\n")
         self.assertEqual(result[24], [{"a": "1", "b": "2"}])
+        self.assertEqual(result[25], [{"a": "1", "b": "2"}])
 
     def test_seq_helpers_cover_filters_projections_and_aggregates(self):
         code = """
@@ -486,8 +488,10 @@ rows = [
     seq.tail([1, 2, 3], 2),
     seq.tail([1, 2, 3], 0),
     seq.join_text(['a', 'b'], ','),
+    seq.join_text(['a', 'b']),
     seq.unique(['a', 'b', 'a']),
     seq.compact([0, 1, None, '', 'x', False]),
+    seq.default([None, '', 'ok', 0], 'fallback'),
     seq.default([], ['fallback']),
     seq.wrap([1, 2], 'id'),
     seq.enumerate(['a', 'b']),
@@ -495,11 +499,11 @@ rows = [
     seq.is_not_empty([1]),
     seq.any([0, 2], 2),
     seq.all([2, 2], 2),
-    seq.sum([1, 2, None]),
-    seq.avg([1, 2, 3]),
-    seq.min([3, 1, 2]),
-    seq.max([3, 1, 2]),
-    seq.round([1.234, 5.678], 1),
+    seq.sum([1, '2', 'bad', None, 4.567]),
+    seq.avg([1, '2', 'bad', None, 4.567]),
+    seq.min([3, '1', 'bad', None, 2]),
+    seq.max([3, '1', 'bad', None, 2]),
+    seq.round([1, '2', 'bad', None, 4.567], 1),
     seq.lengths(['aa', [1, 2, 3]]),
     seq.lower(['A', 'B']),
     seq.upper(['a', 'b']),
@@ -522,18 +526,20 @@ rows = [
         self.assertEqual(result[0:8], [['alpha'], ['beta'], ['beta'], ['alpha'], ['a1', 'b2'], ['bb'], ['a.py'], ['b.txt']])
         self.assertEqual(result[8], {'name': 'apple', 'kind': 'fruit', 'count': 2, 'meta': {'rank': 3}})
         self.assertEqual(result[9], {'name': 'kale', 'kind': 'veg', 'count': None, 'meta': {'rank': 2}})
-        self.assertEqual(result[10:19], [[1, 2], [2, 3], [], 'a,b', ['a', 'b'], [1, 'x'], ['fallback'], [{'id': 1}, {'id': 2}], [{'index': 0, 'value': 'a'}, {'index': 1, 'value': 'b'}]])
-        self.assertEqual(result[19:33], [True, True, True, True, 3, 2, 1, 3, [1.2, 5.7], [2, 3], ['a', 'b'], ['A', 'B'], [1, 2, 3], [3, 2, 1]])
-        self.assertEqual(result[33], [3, 1, 2])
-        self.assertEqual(result[34], ['apple', 'pear', 'kale'])
-        self.assertEqual(result[35], ['fruit', 'fruit', 'veg'])
-        self.assertEqual(result[36], [{'name': 'apple', 'count': 2}, {'name': 'pear', 'count': 4}, {'name': 'kale', 'count': None}])
-        self.assertEqual(result[37], [{'name': 'apple', 'kind': 'fruit', 'count': 2}, {'name': 'pear', 'kind': 'fruit', 'count': 4}, {'name': 'kale', 'kind': 'veg', 'count': None}])
-        self.assertEqual([row['name'] for row in result[38]], ['apple', 'pear'])
-        self.assertEqual([row['name'] for row in result[39]], ['pear'])
-        self.assertEqual(result[40], 'name,kind\napple,fruit\npear,fruit\nkale,veg\n')
-        self.assertEqual(result[41], 'name\tcount\napple\t2\n')
-        self.assertEqual(result[42], '{"name": "apple"}\n{"name": "pear"}\n{"name": "kale"}\n')
+        self.assertEqual(result[10:21], [[1, 2], [2, 3], [], 'a,b', 'ab', ['a', 'b'], [1, 'x'], ['fallback', 'fallback', 'ok', 0], [], [{'id': 1}, {'id': 2}], [{'index': 0, 'item': 'a'}, {'index': 1, 'item': 'b'}]])
+        self.assertEqual(result[21:26], [True, True, True, True, 7.567])
+        self.assertAlmostEqual(result[26], 2.522333333333333)
+        self.assertEqual(result[27:35], [1, 3, [1, 2, None, None, 4.6], [2, 3], ['a', 'b'], ['A', 'B'], [1, 2, 3], [3, 2, 1]])
+        self.assertEqual(result[35], [3, 1, 2])
+        self.assertEqual(result[36], ['apple', 'pear', 'kale'])
+        self.assertEqual(result[37], ['fruit', 'fruit', 'veg'])
+        self.assertEqual(result[38], [{'name': 'apple', 'count': 2}, {'name': 'pear', 'count': 4}, {'name': 'kale', 'count': None}])
+        self.assertEqual(result[39], [{'name': 'apple', 'kind': 'fruit', 'count': 2}, {'name': 'pear', 'kind': 'fruit', 'count': 4}, {'name': 'kale', 'kind': 'veg', 'count': None}])
+        self.assertEqual([row['name'] for row in result[40]], ['apple', 'pear'])
+        self.assertEqual([row['name'] for row in result[41]], ['pear'])
+        self.assertEqual(result[42], 'name,kind\napple,fruit\npear,fruit\nkale,veg\n')
+        self.assertEqual(result[43], 'name\tcount\napple\t2\n')
+        self.assertEqual(result[44], '{"name": "apple"}\n{"name": "pear"}\n{"name": "kale"}\n')
 
     def test_obj_helpers_cover_projection_update_and_merge(self):
         code = """

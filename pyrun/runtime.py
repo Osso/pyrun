@@ -29,7 +29,7 @@ class TextNamespace:
         if start is None and end is None:
             return lines
         first = 1 if start is None else start
-        last = len(lines) if end is None else end
+        last = first if end is None else end
         return lines[max(first - 1, 0):last]
 
     def range(self, value: Any, start: int, end: int | None = None) -> list[str]:
@@ -140,7 +140,7 @@ class SeqNamespace:
             return []
         return values[-count:]
 
-    def join_text(self, values: list[Any], separator: str = "\n") -> str:
+    def join_text(self, values: list[Any], separator: str = "") -> str:
         return separator.join(str(value) for value in values)
 
     def unique(self, values: list[Any]) -> list[Any]:
@@ -153,14 +153,14 @@ class SeqNamespace:
     def compact(self, values: list[Any]) -> list[Any]:
         return [value for value in values if value]
 
-    def default(self, values: list[Any], value: Any) -> Any:
-        return values if values else value
+    def default(self, values: list[Any], value: Any) -> list[Any]:
+        return [value if item is None or item == "" else item for item in values]
 
     def wrap(self, values: list[Any], name: str) -> list[dict[str, Any]]:
         return [{name: value} for value in values]
 
     def enumerate(self, values: list[Any]) -> list[dict[str, Any]]:
-        return [{"index": index, "value": value} for index, value in builtins.enumerate(values)]
+        return [{"index": index, "item": value} for index, value in builtins.enumerate(values)]
 
     def is_empty(self, values: list[Any]) -> bool:
         return len(values) == 0
@@ -183,20 +183,44 @@ class SeqNamespace:
         return builtins.all(value == predicate_or_value for value in values)
 
     def sum(self, values: list[Any]) -> Any:
-        return builtins.sum(value for value in values if value is not None)
+        return builtins.sum(self._numeric_values(values))
 
     def avg(self, values: list[Any]) -> Any:
-        numeric = [value for value in values if value is not None]
-        return self.sum(numeric) / len(numeric) if numeric else None
+        numeric = self._numeric_values(values)
+        return builtins.sum(numeric) / len(numeric) if numeric else None
 
     def min(self, values: list[Any]) -> Any:
-        return builtins.min(values) if values else None
+        numeric = self._numeric_values(values)
+        return builtins.min(numeric) if numeric else None
 
     def max(self, values: list[Any]) -> Any:
-        return builtins.max(values) if values else None
+        numeric = self._numeric_values(values)
+        return builtins.max(numeric) if numeric else None
 
     def round(self, values: list[Any], digits: int = 0) -> list[Any]:
-        return [builtins.round(value, digits) for value in values]
+        return [self._round_value(value, digits) for value in values]
+
+    def _round_value(self, value: Any, digits: int) -> int | float | None:
+        numeric = self._coerce_number(value)
+        if numeric is None:
+            return None
+        return builtins.round(numeric, digits)
+
+    def _numeric_values(self, values: list[Any]) -> list[int | float]:
+        return [numeric for value in values if (numeric := self._coerce_number(value)) is not None]
+
+    def _coerce_number(self, value: Any) -> int | float | None:
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, int | float):
+            return value
+        if isinstance(value, str):
+            try:
+                number = float(value)
+            except ValueError:
+                return None
+            return int(number) if number.is_integer() else number
+        return None
 
     def lengths(self, values: list[Any]) -> list[int]:
         return [len(value) for value in values]

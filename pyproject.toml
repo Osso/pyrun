@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyrun"
+version = "0.1.0"
+description = "Python-backed host automation runtime prototype inspired by Hostrun"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Alessio Deiana" }]
+dependencies = []
+
+[project.scripts]
+pyrun-jsonl = "pyrun.jsonl:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pyrun*"]

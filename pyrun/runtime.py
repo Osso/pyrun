@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 
@@ -418,12 +419,12 @@ class Session:
     auto_approve: bool = True
     approval_counter: int = 0
 
-    def build_globals(self) -> dict[str, Any]:
+    def build_globals(self, pi: Any | None = None) -> dict[str, Any]:
         host = Host(self)
         fs = FileSystem(self)
         cli = CommandNamespace(self, immediate=False)
         run = CommandNamespace(self, immediate=True)
-        return {
+        globals_map = {
             "ctx": self.ctx,
             "host": host,
             "fs": fs,
@@ -441,6 +442,9 @@ class Session:
             "obj": ObjNamespace(),
             "hr": hr,
         }
+        if pi is not None:
+            globals_map["pi"] = pi
+        return globals_map
 
     def require_approval(self, tool: str, summary: str, args: dict[str, Any]) -> None:
         if self.auto_approve:
@@ -1891,6 +1895,56 @@ class ImmediateCommand:
         return self._command(*args).run()
 
 
+PiRequestHandler = Callable[[str, Any], Any]
+
+
+class PiFooter:
+    def __init__(self, snapshot: Any) -> None:
+        self._snapshot = snapshot
+
+    def snapshot(self) -> Any:
+        return self._snapshot
+
+
+class PiAgents:
+    def __init__(self, request_handler: PiRequestHandler) -> None:
+        self._request_handler = request_handler
+
+    def spawn(self, params: Any) -> Any:
+        return self._request_handler("agents.spawn", params)
+
+    def wait(self, params: Any) -> Any:
+        if isinstance(params, str):
+            params = {"agentId": params}
+        return self._request_handler("agents.wait", params)
+
+    def list(self, params: Any = None) -> Any:
+        return self._request_handler("agents.list", params)
+
+
+class PiMessages:
+    def __init__(self, request_handler: PiRequestHandler) -> None:
+        self._request_handler = request_handler
+
+    def enqueue(self, params: Any) -> Any:
+        return self._request_handler("messages.enqueue", params)
+
+
+class PiBridge:
+    def __init__(self, snapshot: Any, request_handler: PiRequestHandler) -> None:
+        footer = snapshot.get("footer") if isinstance(snapshot, dict) else None
+        self.footer = PiFooter(footer)
+        self.agents = PiAgents(request_handler)
+        self.messages = PiMessages(request_handler)
+        self._request_handler = request_handler
+
+    def compact(self, params: Any = None) -> Any:
+        return self._request_handler("compact", params)
+
+    def restart(self, params: Any = None) -> Any:
+        return self._request_handler("restart", params)
+
+
 class SessionStore:
     def __init__(self, auto_approve: bool = True) -> None:
         self._auto_approve = auto_approve
@@ -1904,12 +1958,20 @@ class SessionStore:
     def new_auto_approve(cls) -> SessionStore:
         return cls(auto_approve=True)
 
-    def evaluate(self, code: str, session_id: str = "default") -> dict[str, Any]:
+    def evaluate(
+        self,
+        code: str,
+        session_id: str = "default",
+        pi: Any | None = None,
+        pi_bridge: bool = False,
+        pi_request_handler: PiRequestHandler | None = None,
+    ) -> dict[str, Any]:
         session = self._session(session_id)
         console = io.StringIO()
+        pi_global = self._build_pi_global(pi, pi_bridge, pi_request_handler)
         try:
             with contextlib.redirect_stdout(console):
-                value = evaluate_python(code, session.build_globals())
+                value = evaluate_python(code, session.build_globals(pi_global))
         except ApprovalRequired as exc:
             return {
                 "type": "needs_approval",
@@ -1929,6 +1991,18 @@ class SessionStore:
             "console": console_lines(console),
             "value": to_json_value(value),
         }
+
+    def _build_pi_global(
+        self,
+        snapshot: Any | None,
+        pi_bridge: bool,
+        pi_request_handler: PiRequestHandler | None,
+    ) -> PiBridge | None:
+        if not pi_bridge:
+            return None
+        if pi_request_handler is None:
+            raise ValueError("pi_bridge requires a Pi request handler")
+        return PiBridge(snapshot or {}, pi_request_handler)
 
     def _session(self, session_id: str) -> Session:
         if not session_id:

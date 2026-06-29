@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -69,6 +71,102 @@ class JsonlProtocolTests(unittest.TestCase):
 
             self.assertEqual(result["type"], "completed")
             self.assertEqual(target.read_text(), "hello")
+
+    def test_pi_footer_snapshot_uses_provided_snapshot(self):
+        result = self.handle(json.dumps({
+            "code": "pi.footer.snapshot()",
+            "pi": {"footer": {"cwd": "/repo", "model": "test/model"}},
+            "pi_bridge": True,
+        }))
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn("pi_bridge requires a Pi request handler", result["error"])
+
+        handled = []
+        result = self.store.evaluate(
+            "pi.footer.snapshot()",
+            pi={"footer": {"cwd": "/repo", "model": "test/model"}},
+            pi_bridge=True,
+            pi_request_handler=lambda method, params: handled.append((method, params)),
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], {"cwd": "/repo", "model": "test/model"})
+        self.assertEqual(handled, [])
+
+    def test_pi_is_absent_without_bridge(self):
+        result = self.handle(json.dumps({"code": "pi.footer.snapshot()"}))
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn("name 'pi' is not defined", result["error"])
+
+    def test_pi_request_roundtrip_through_jsonl_subprocess(self):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pyrun.jsonl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(json.dumps({
+                "code": "pi.agents.wait('agent-1')",
+                "pi": {"footer": {"cwd": "/repo"}},
+                "pi_bridge": True,
+            }) + "\n")
+            process.stdin.flush()
+
+            request = json.loads(process.stdout.readline())
+            self.assertEqual(request, {
+                "type": "pi_request",
+                "method": "agents.wait",
+                "params": {"agentId": "agent-1"},
+            })
+
+            process.stdin.write(json.dumps({"result": {"id": "agent-1", "status": "done"}}) + "\n")
+            process.stdin.flush()
+            result = json.loads(process.stdout.readline())
+
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(result["value"], {"id": "agent-1", "status": "done"})
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_pi_request_error_response_becomes_eval_error(self):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pyrun.jsonl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(json.dumps({"code": "pi.compact()", "pi": {}, "pi_bridge": True}) + "\n")
+            process.stdin.flush()
+            self.assertEqual(json.loads(process.stdout.readline())["method"], "compact")
+
+            process.stdin.write(json.dumps({"error": "denied"}) + "\n")
+            process.stdin.flush()
+            result = json.loads(process.stdout.readline())
+
+            self.assertEqual(result["type"], "error")
+            self.assertIn("denied", result["error"])
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=5)
 
 
 if __name__ == "__main__":

@@ -102,6 +102,29 @@ Available globals:
   rows produce a list of dict rows. Non-row statements return
   `{'rows_affected': n}`. `options.json=False` is accepted for parity planning,
   but this prototype still returns rows/dicts rather than formatted CLI text.
+- `text`: string helper namespace. Includes `lines(value, start=None, end=None)`
+  with 1-based inclusive ranges, `line_count`, `word_count`, `head`, `tail`,
+  `split_row`, `split_words`, `trim`/`trimmed`, `replace_text`, `json`,
+  `json_lines`/`jsonl`, `lower`, `upper`, `chars`, `bytes_count`/`byte_count`,
+  `byte_array`, and `csv`/`tsv` for parsing delimited text or formatting rows.
+- `seq`: list/sequence helper namespace. Includes text filters
+  (`containing`, `not_containing`, `starts_with`, `ends_with`, `matching`,
+  `not_matching`, `glob`, `not_glob`), collection helpers (`first`, `last`,
+  `take`/`head`, `tail`, `join_text`, `unique`, `compact`, `default`, `wrap`,
+  `enumerate`, `is_empty`, `is_not_empty`), predicates and aggregates
+  (`any`, `all`, `sum`, `avg`, `min`, `max`, `round`, `lengths`), transforms
+  (`lower`, `upper`, `sorted`, `reversed`), projection helpers (`get`,
+  `pluck`/`values_of`, `select`, `reject`, `where`), and serializers
+  (`to_csv`, `to_tsv`, `to_json_lines`).
+- `obj`: dict/object helper namespace. Includes dotted-path `get`, `select`,
+  `reject`, `rename`, `insert`, `update`, `merge`, `columns`, `values`,
+  `entries`, and `items`.
+- `hr(value)`: small wrapper factory dispatching to `text`, `seq`, or `obj` by
+  value type, for fluent calls like `hr('a\nb').lines()`,
+  `hr(rows).where({'kind': 'fruit'}).select('name')`, or
+  `hr({'a': 1}).select('a')`. Python cannot safely patch builtins the way
+  Hostrun patches JavaScript prototypes, so these helpers are explicit globals
+  instead. Wrapper values are unwrapped during JSONL result conversion.
 - `cli.<program>(*args)`: command builder. Uses argv-style execution and no
   shell parsing.
 - `run.<program>(*args)`: immediate command execution.
@@ -130,7 +153,9 @@ cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run
 
 - Runtime language is Python instead of QuickJS JavaScript.
 - This prototype does not implement approval gates or sandboxing.
-- Helpers are simple Python objects, not JS proxies.
+- Helpers are simple Python objects and namespaces, not JS proxies or patched
+  builtins. Use `text.lines(value)` or `hr(value).lines()` instead of JS-style
+  prototype methods on every string/list/object.
 - Statement evaluation returns the final trailing expression when present.
 - Print output is captured as `console` lines in completed results.
 - HTTP uses stdlib `urllib.request`; no retry, cookie jar, or streaming support
@@ -180,6 +205,13 @@ rg.matches('TODO', ['src'], {'fixed': True})
 sqlite.query('scratch.db', 'CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)')
 sqlite.query('scratch.db', "INSERT INTO items (name) VALUES ('apple')")
 sqlite.query('scratch.db', 'SELECT id, name FROM items')
+
+text.lines('a\nb\nc', 2, 3)
+text.json_lines('{"a":1}\n{"a":2}\n')
+seq.where([{'kind': 'fruit'}, {'kind': 'veg'}], {'kind': 'fruit'})
+seq.select([{'name': 'apple', 'count': 2}], 'name')
+obj.rename({'name': 'apple'}, {'name': 'label'})
+hr([{'count': 2}, {'count': 3}]).where(lambda row: row['count'] > 2).select('count')
 ```
 
 ## Tests

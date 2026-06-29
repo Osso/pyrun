@@ -423,6 +423,159 @@ d.cleanup()
         self.assertEqual(rows, [{"id": 1, "name": "apple"}, {"id": 2, "name": "pear"}])
         self.assertTrue(database_exists)
 
+    def test_text_helpers_cover_lines_jsonl_csv_and_bytes(self):
+        code = """
+[
+    text.lines('a\\nb\\nc', 2, 3),
+    text.line_count('a\\nb\\nc'),
+    text.word_count(' one two  three '),
+    text.head('a\\nb\\nc', 2),
+    text.tail('a\\nb\\nc', 2),
+    text.split_row('a,b,c', ','),
+    text.split_words(' one two  three '),
+    text.trim('  hi  '),
+    text.trimmed('  hi  '),
+    text.replace_text('one two one', 'one', 'ONE'),
+    text.json('{"a": 1}'),
+    text.json_lines('{"a":1}\\n{"a":2}\\n'),
+    text.jsonl('{"a":1}\\n{"a":2}\\n'),
+    text.lower('Hi'),
+    text.upper('Hi'),
+    text.chars('ab'),
+    text.bytes_count('é'),
+    text.byte_count('é'),
+    text.byte_array('é'),
+    text.csv([{'a': 1}, {'a': 2, 'b': 3}]),
+    text.tsv([['a', 'b'], [1, 2]]),
+    text.csv('a,b\\n1,2\\n'),
+    text.tsv('a\\tb\\n1\\t2\\n'),
+]
+"""
+        result = self.eval(code)["value"]
+
+        self.assertEqual(result[0], ["b", "c"])
+        self.assertEqual(result[1:19], [3, 3, ["a", "b"], ["b", "c"], ["a", "b", "c"], ["one", "two", "three"], "hi", "hi", "ONE two ONE", {"a": 1}, [{"a": 1}, {"a": 2}], [{"a": 1}, {"a": 2}], "hi", "HI", ["a", "b"], 2, 2, [195, 169]])
+        self.assertEqual(result[19], "a,b\n1,\n2,3\n")
+        self.assertEqual(result[20], "a\tb\n1\t2\n")
+        self.assertEqual(result[21], [{"a": "1", "b": "2"}])
+        self.assertEqual(result[22], [{"a": "1", "b": "2"}])
+
+    def test_seq_helpers_cover_filters_projections_and_aggregates(self):
+        code = """
+rows = [
+    {'name': 'apple', 'kind': 'fruit', 'count': 2, 'meta': {'rank': 3}},
+    {'name': 'pear', 'kind': 'fruit', 'count': 4, 'meta': {'rank': 1}},
+    {'name': 'kale', 'kind': 'veg', 'count': None, 'meta': {'rank': 2}},
+]
+[
+    seq.containing(['alpha', 'beta'], 'alp'),
+    seq.not_containing(['alpha', 'beta'], 'alp'),
+    seq.starts_with(['alpha', 'beta'], 'be'),
+    seq.ends_with(['alpha', 'beta'], 'ha'),
+    seq.matching(['a1', 'b2'], r'\\d'),
+    seq.not_matching(['a1', 'bb'], r'\\d'),
+    seq.glob(['a.py', 'b.txt'], '*.py'),
+    seq.not_glob(['a.py', 'b.txt'], '*.py'),
+    seq.first(rows),
+    seq.last(rows),
+    seq.take([1, 2, 3], 2),
+    seq.tail([1, 2, 3], 2),
+    seq.join_text(['a', 'b'], ','),
+    seq.unique(['a', 'b', 'a']),
+    seq.compact([0, 1, None, '', 'x', False]),
+    seq.default([], ['fallback']),
+    seq.wrap([1, 2], 'id'),
+    seq.enumerate(['a', 'b']),
+    seq.is_empty([]),
+    seq.is_not_empty([1]),
+    seq.any([0, 2], 2),
+    seq.all([2, 2], 2),
+    seq.sum([1, 2, None]),
+    seq.avg([1, 2, 3]),
+    seq.min([3, 1, 2]),
+    seq.max([3, 1, 2]),
+    seq.round([1.234, 5.678], 1),
+    seq.lengths(['aa', [1, 2, 3]]),
+    seq.lower(['A', 'B']),
+    seq.upper(['a', 'b']),
+    seq.sorted([3, 1, 2]),
+    seq.reversed([1, 2, 3]),
+    seq.get(rows, 'meta.rank'),
+    seq.pluck(rows, 'name'),
+    seq.values_of(rows, 'kind'),
+    seq.select(rows, 'name', 'count'),
+    seq.reject(rows, 'meta'),
+    seq.where(rows, {'kind': 'fruit'}),
+    seq.where(rows, lambda row: (row['count'] or 0) >= 3),
+    seq.to_csv(seq.select(rows, 'name', 'kind')),
+    seq.to_tsv([["name", "count"], ["apple", 2]]),
+    seq.to_json_lines(seq.select(rows, 'name')),
+]
+"""
+        result = self.eval(code)["value"]
+
+        self.assertEqual(result[0:8], [['alpha'], ['beta'], ['beta'], ['alpha'], ['a1', 'b2'], ['bb'], ['a.py'], ['b.txt']])
+        self.assertEqual(result[8], {'name': 'apple', 'kind': 'fruit', 'count': 2, 'meta': {'rank': 3}})
+        self.assertEqual(result[9], {'name': 'kale', 'kind': 'veg', 'count': None, 'meta': {'rank': 2}})
+        self.assertEqual(result[10:18], [[1, 2], [2, 3], 'a,b', ['a', 'b'], [1, 'x'], ['fallback'], [{'id': 1}, {'id': 2}], [{'index': 0, 'value': 'a'}, {'index': 1, 'value': 'b'}]])
+        self.assertEqual(result[18:32], [True, True, True, True, 3, 2, 1, 3, [1.2, 5.7], [2, 3], ['a', 'b'], ['A', 'B'], [1, 2, 3], [3, 2, 1]])
+        self.assertEqual(result[32], [3, 1, 2])
+        self.assertEqual(result[33], ['apple', 'pear', 'kale'])
+        self.assertEqual(result[34], ['fruit', 'fruit', 'veg'])
+        self.assertEqual(result[35], [{'name': 'apple', 'count': 2}, {'name': 'pear', 'count': 4}, {'name': 'kale', 'count': None}])
+        self.assertEqual(result[36], [{'name': 'apple', 'kind': 'fruit', 'count': 2}, {'name': 'pear', 'kind': 'fruit', 'count': 4}, {'name': 'kale', 'kind': 'veg', 'count': None}])
+        self.assertEqual([row['name'] for row in result[37]], ['apple', 'pear'])
+        self.assertEqual([row['name'] for row in result[38]], ['pear'])
+        self.assertEqual(result[39], 'name,kind\napple,fruit\npear,fruit\nkale,veg\n')
+        self.assertEqual(result[40], 'name\tcount\napple\t2\n')
+        self.assertEqual(result[41], '{"name": "apple"}\n{"name": "pear"}\n{"name": "kale"}\n')
+
+    def test_obj_helpers_cover_projection_update_and_merge(self):
+        code = """
+item = {'name': 'apple', 'count': 2, 'meta': {'rank': 3}}
+[
+    obj.get(item, 'meta.rank'),
+    obj.select(item, 'name', 'count'),
+    obj.reject(item, 'meta'),
+    obj.rename(item, {'name': 'label'}),
+    obj.insert(item, 'fresh', True),
+    obj.update(item, 'count', lambda value: value + 1),
+    obj.update(item, 'count', 10),
+    obj.merge(item, {'count': 5, 'color': 'red'}),
+    obj.columns(item),
+    obj.values(item),
+    obj.entries(item),
+    obj.items(item),
+]
+"""
+        result = self.eval(code)["value"]
+
+        self.assertEqual(result[0], 3)
+        self.assertEqual(result[1], {'name': 'apple', 'count': 2})
+        self.assertEqual(result[2], {'name': 'apple', 'count': 2})
+        self.assertEqual(result[3], {'label': 'apple', 'count': 2, 'meta': {'rank': 3}})
+        self.assertEqual(result[4], {'name': 'apple', 'count': 2, 'meta': {'rank': 3}, 'fresh': True})
+        self.assertEqual(result[5], {'name': 'apple', 'count': 3, 'meta': {'rank': 3}})
+        self.assertEqual(result[6], {'name': 'apple', 'count': 10, 'meta': {'rank': 3}})
+        self.assertEqual(result[7], {'name': 'apple', 'count': 5, 'meta': {'rank': 3}, 'color': 'red'})
+        self.assertEqual(result[8], ['name', 'count', 'meta'])
+        self.assertEqual(result[9], ['apple', 2, {'rank': 3}])
+        self.assertEqual(result[10], [['name', 'apple'], ['count', 2], ['meta', {'rank': 3}]])
+        self.assertEqual(result[11], [['name', 'apple'], ['count', 2], ['meta', {'rank': 3}]])
+
+    def test_hr_wrapper_dispatches_and_returns_json_values(self):
+        code = """
+[
+    hr('a\\nb\\nc').lines(2, 3),
+    hr([{'name': 'apple'}, {'name': 'pear'}]).select('name'),
+    hr({'name': 'apple', 'count': 2}).select('name'),
+    hr([1, 2, 3]).where(lambda value: value > 1).sum(),
+]
+"""
+        result = self.eval(code)["value"]
+
+        self.assertEqual(result, [['b', 'c'], [{'name': 'apple'}, {'name': 'pear'}], {'name': 'apple'}, 5])
+
     def test_print_output_is_captured_as_console(self):
         result = self.eval("print('hello')\n7")
 

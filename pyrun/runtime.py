@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
 import csv
 import fnmatch
@@ -20,6 +21,322 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+class TextNamespace:
+    def lines(self, value: Any, start: int | None = None, end: int | None = None) -> list[str]:
+        lines = str(value).splitlines()
+        if start is None and end is None:
+            return lines
+        first = 1 if start is None else start
+        last = len(lines) if end is None else end
+        return lines[max(first - 1, 0):last]
+
+    def line_count(self, value: Any) -> int:
+        return len(str(value).splitlines())
+
+    def word_count(self, value: Any) -> int:
+        return len(str(value).split())
+
+    def head(self, value: Any, count: int = 10) -> list[str]:
+        return self.lines(value)[:count]
+
+    def tail(self, value: Any, count: int = 10) -> list[str]:
+        return self.lines(value)[-count:]
+
+    def split_row(self, value: Any, separator: str = "\n") -> list[str]:
+        return str(value).split(separator)
+
+    def split_words(self, value: Any) -> list[str]:
+        return str(value).split()
+
+    def trim(self, value: Any) -> str:
+        return str(value).strip()
+
+    def trimmed(self, value: Any) -> str:
+        return self.trim(value)
+
+    def replace_text(self, value: Any, old: Any, new: Any) -> str:
+        return str(value).replace(str(old), str(new))
+
+    def json(self, value: Any) -> Any:
+        return json.loads(str(value))
+
+    def json_lines(self, value: Any) -> list[Any]:
+        return [json.loads(line) for line in str(value).splitlines() if line]
+
+    def jsonl(self, value: Any) -> list[Any]:
+        return self.json_lines(value)
+
+    def lower(self, value: Any) -> str:
+        return str(value).lower()
+
+    def upper(self, value: Any) -> str:
+        return str(value).upper()
+
+    def chars(self, value: Any) -> list[str]:
+        return list(str(value))
+
+    def bytes_count(self, value: Any) -> int:
+        return len(str(value).encode())
+
+    def byte_count(self, value: Any) -> int:
+        return self.bytes_count(value)
+
+    def byte_array(self, value: Any) -> list[int]:
+        return list(str(value).encode())
+
+    def csv(self, value: Any) -> Any:
+        return parse_or_serialize_delimited(value, ",")
+
+    def tsv(self, value: Any) -> Any:
+        return parse_or_serialize_delimited(value, "\t")
+
+
+class SeqNamespace:
+    def containing(self, values: list[Any], needle: Any) -> list[Any]:
+        return [value for value in values if str(needle) in str(value)]
+
+    def not_containing(self, values: list[Any], needle: Any) -> list[Any]:
+        return [value for value in values if str(needle) not in str(value)]
+
+    def starts_with(self, values: list[Any], prefix: Any) -> list[Any]:
+        return [value for value in values if str(value).startswith(str(prefix))]
+
+    def ends_with(self, values: list[Any], suffix: Any) -> list[Any]:
+        return [value for value in values if str(value).endswith(str(suffix))]
+
+    def matching(self, values: list[Any], pattern: str) -> list[Any]:
+        compiled = re.compile(pattern)
+        return [value for value in values if compiled.search(str(value))]
+
+    def not_matching(self, values: list[Any], pattern: str) -> list[Any]:
+        compiled = re.compile(pattern)
+        return [value for value in values if not compiled.search(str(value))]
+
+    def glob(self, values: list[Any], pattern: str) -> list[Any]:
+        return [value for value in values if fnmatch.fnmatch(str(value), pattern)]
+
+    def not_glob(self, values: list[Any], pattern: str) -> list[Any]:
+        return [value for value in values if not fnmatch.fnmatch(str(value), pattern)]
+
+    def first(self, values: list[Any]) -> Any:
+        return values[0] if values else None
+
+    def last(self, values: list[Any]) -> Any:
+        return values[-1] if values else None
+
+    def take(self, values: list[Any], count: int) -> list[Any]:
+        return values[:count]
+
+    def head(self, values: list[Any], count: int = 10) -> list[Any]:
+        return self.take(values, count)
+
+    def tail(self, values: list[Any], count: int = 10) -> list[Any]:
+        return values[-count:]
+
+    def join_text(self, values: list[Any], separator: str = "\n") -> str:
+        return separator.join(str(value) for value in values)
+
+    def unique(self, values: list[Any]) -> list[Any]:
+        unique_values: list[Any] = []
+        for value in values:
+            if value not in unique_values:
+                unique_values.append(value)
+        return unique_values
+
+    def compact(self, values: list[Any]) -> list[Any]:
+        return [value for value in values if value]
+
+    def default(self, values: list[Any], value: Any) -> Any:
+        return values if values else value
+
+    def wrap(self, values: list[Any], name: str) -> list[dict[str, Any]]:
+        return [{name: value} for value in values]
+
+    def enumerate(self, values: list[Any]) -> list[dict[str, Any]]:
+        return [{"index": index, "value": value} for index, value in builtins.enumerate(values)]
+
+    def is_empty(self, values: list[Any]) -> bool:
+        return len(values) == 0
+
+    def is_not_empty(self, values: list[Any]) -> bool:
+        return not self.is_empty(values)
+
+    def any(self, values: list[Any], predicate_or_value: Any = None) -> bool:
+        if predicate_or_value is None:
+            return builtins.any(values)
+        if callable(predicate_or_value):
+            return builtins.any(predicate_or_value(value) for value in values)
+        return builtins.any(value == predicate_or_value for value in values)
+
+    def all(self, values: list[Any], predicate_or_value: Any = None) -> bool:
+        if predicate_or_value is None:
+            return builtins.all(values)
+        if callable(predicate_or_value):
+            return builtins.all(predicate_or_value(value) for value in values)
+        return builtins.all(value == predicate_or_value for value in values)
+
+    def sum(self, values: list[Any]) -> Any:
+        return builtins.sum(value for value in values if value is not None)
+
+    def avg(self, values: list[Any]) -> Any:
+        numeric = [value for value in values if value is not None]
+        return self.sum(numeric) / len(numeric) if numeric else None
+
+    def min(self, values: list[Any]) -> Any:
+        return builtins.min(values) if values else None
+
+    def max(self, values: list[Any]) -> Any:
+        return builtins.max(values) if values else None
+
+    def round(self, values: list[Any], digits: int = 0) -> list[Any]:
+        return [builtins.round(value, digits) for value in values]
+
+    def lengths(self, values: list[Any]) -> list[int]:
+        return [len(value) for value in values]
+
+    def lower(self, values: list[Any]) -> list[str]:
+        return [str(value).lower() for value in values]
+
+    def upper(self, values: list[Any]) -> list[str]:
+        return [str(value).upper() for value in values]
+
+    def sorted(self, values: list[Any]) -> list[Any]:
+        return builtins.sorted(values)
+
+    def reversed(self, values: list[Any]) -> list[Any]:
+        return list(builtins.reversed(values))
+
+    def get(self, values: list[Any], path: str) -> list[Any]:
+        return [get_path(value, path) for value in values]
+
+    def pluck(self, values: list[Any], path: str) -> list[Any]:
+        return self.get(values, path)
+
+    def values_of(self, values: list[Any], path: str) -> list[Any]:
+        return self.get(values, path)
+
+    def select(self, values: list[Any], *fields: str) -> list[dict[str, Any]]:
+        return [select_fields(value, fields) for value in values]
+
+    def reject(self, values: list[Any], *fields: str) -> list[dict[str, Any]]:
+        return [reject_fields(value, fields) for value in values]
+
+    def where(self, values: list[Any], predicate_or_dict: Any) -> list[Any]:
+        if callable(predicate_or_dict):
+            return [value for value in values if predicate_or_dict(value)]
+        return [value for value in values if matches_filter(value, predicate_or_dict)]
+
+    def to_csv(self, rows: list[Any]) -> str:
+        return serialize_delimited_rows(rows, ",")
+
+    def to_tsv(self, rows: list[Any]) -> str:
+        return serialize_delimited_rows(rows, "\t")
+
+    def to_json_lines(self, rows: list[Any]) -> str:
+        return "\n".join(json.dumps(row) for row in rows) + ("\n" if rows else "")
+
+
+class ObjNamespace:
+    def get(self, value: dict[Any, Any], path: str) -> Any:
+        return get_path(value, path)
+
+    def select(self, value: dict[Any, Any], *fields: str) -> dict[str, Any]:
+        return select_fields(value, fields)
+
+    def reject(self, value: dict[Any, Any], *fields: str) -> dict[str, Any]:
+        return reject_fields(value, fields)
+
+    def rename(self, value: dict[Any, Any], mapping: dict[str, str]) -> dict[str, Any]:
+        return {mapping.get(str(key), str(key)): item for key, item in value.items()}
+
+    def insert(self, value: dict[Any, Any], key: str, item: Any) -> dict[str, Any]:
+        return {**value, key: item}
+
+    def update(self, value: dict[Any, Any], key: str, value_or_fn: Any) -> dict[str, Any]:
+        item = value_or_fn(value.get(key)) if callable(value_or_fn) else value_or_fn
+        return {**value, key: item}
+
+    def merge(self, value: dict[Any, Any], other: dict[Any, Any]) -> dict[str, Any]:
+        return {**value, **other}
+
+    def columns(self, value: dict[Any, Any]) -> list[str]:
+        return [str(key) for key in value.keys()]
+
+    def values(self, value: dict[Any, Any]) -> list[Any]:
+        return list(value.values())
+
+    def entries(self, value: dict[Any, Any]) -> list[list[Any]]:
+        return [[key, item] for key, item in value.items()]
+
+    def items(self, value: dict[Any, Any]) -> list[list[Any]]:
+        return self.entries(value)
+
+
+@dataclass(frozen=True)
+class HelperValue:
+    value: Any
+
+    def __getattr__(self, name: str) -> Any:
+        namespace = helper_namespace_for(self.value)
+        method = getattr(namespace, name)
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            result = method(self.value, *args, **kwargs)
+            return wrap_helper_result(result)
+
+        return call
+
+
+def helper_namespace_for(value: Any) -> Any:
+    if isinstance(value, str):
+        return TextNamespace()
+    if isinstance(value, dict):
+        return ObjNamespace()
+    if isinstance(value, (list, tuple)):
+        return SeqNamespace()
+    raise TypeError(f"no helper wrapper for {type(value).__name__}")
+
+
+def wrap_helper_result(value: Any) -> Any:
+    if isinstance(value, (str, list, tuple, dict)):
+        return HelperValue(value)
+    return value
+
+
+def hr(value: Any) -> HelperValue:
+    helper_namespace_for(value)
+    return HelperValue(value)
+
+
+def get_path(value: Any, path: str) -> Any:
+    current = value
+    for part in path.split("."):
+        current = get_path_part(current, part)
+    return current
+
+
+def get_path_part(value: Any, part: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(part)
+    if isinstance(value, (list, tuple)) and part.isdigit():
+        index = int(part)
+        return value[index] if index < len(value) else None
+    return getattr(value, part, None)
+
+
+def select_fields(value: Any, fields: tuple[str, ...]) -> dict[str, Any]:
+    return {field: get_path(value, field) for field in fields}
+
+
+def reject_fields(value: dict[Any, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    rejected = set(fields)
+    return {str(key): item for key, item in value.items() if str(key) not in rejected}
+
+
+def matches_filter(value: Any, expected: dict[str, Any]) -> bool:
+    return builtins.all(get_path(value, path) == item for path, item in expected.items())
 
 
 class AttrDict(dict):
@@ -79,6 +396,10 @@ class Session:
             "fd": FdNamespace(self),
             "rg": RgNamespace(self),
             "sqlite": SqliteNamespace(self),
+            "text": TextNamespace(),
+            "seq": SeqNamespace(),
+            "obj": ObjNamespace(),
+            "hr": hr,
         }
 
 
@@ -234,6 +555,12 @@ def detect_format(path: Path, explicit_format: str | None) -> str:
 def read_delimited_file(path: Path, delimiter: str) -> list[dict[str, str]]:
     with path.open(newline="") as handle:
         return list(csv.DictReader(handle, delimiter=delimiter))
+
+
+def parse_or_serialize_delimited(value: Any, delimiter: str) -> Any:
+    if isinstance(value, str):
+        return list(csv.DictReader(io.StringIO(value), delimiter=delimiter))
+    return serialize_delimited_rows(value, delimiter)
 
 
 def read_toml_file(path: Path) -> Any:
@@ -1254,6 +1581,8 @@ def to_json_value(value: Any) -> Any:
             "headers": to_json_value(value.headers),
             "body": list(value.body),
         }
+    if isinstance(value, HelperValue):
+        return to_json_value(value.value)
     if isinstance(value, bytes):
         return list(value)
     if isinstance(value, dict):

@@ -8,6 +8,7 @@ import io
 import itertools
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -256,11 +257,166 @@ class FileTools:
         target.write_text(replaced)
         return {"replacements": count}
 
+    def patch(self, path_or_patch: str | os.PathLike[str], maybe_patch: str | None = None) -> list[dict[str, Any]]:
+        patches = parse_patch_input(path_or_patch, maybe_patch)
+        return [self._apply_patch(item) for item in patches]
+
+    def _apply_patch(self, patch: FilePatch) -> dict[str, Any]:
+        target = self._resolve(patch.path)
+        original = [] if patch.is_new else target.read_text().splitlines(keepends=True)
+        updated = apply_hunks(original, patch.hunks, str(patch.path))
+        write_text_file(target, "".join(updated))
+        return {"path": str(target), "hunks": len(patch.hunks)}
+
     def _resolve(self, path: str | os.PathLike[str]) -> Path:
         candidate = Path(path).expanduser()
         if not candidate.is_absolute():
             candidate = self._session.cwd / candidate
         return candidate.resolve()
+
+
+@dataclass(frozen=True)
+class FilePatch:
+    path: str
+    hunks: list[PatchHunk]
+    is_new: bool = False
+
+
+@dataclass(frozen=True)
+class PatchHunk:
+    old_start: int
+    old_count: int
+    new_start: int
+    new_count: int
+    lines: list[str]
+
+
+def parse_patch_input(path_or_patch: str | os.PathLike[str], maybe_patch: str | None) -> list[FilePatch]:
+    if maybe_patch is not None:
+        return [FilePatch(str(path_or_patch), parse_hunks(str(maybe_patch)))]
+    return parse_file_patches(str(path_or_patch))
+
+
+def parse_file_patches(patch_text: str) -> list[FilePatch]:
+    lines = patch_text.splitlines(keepends=True)
+    patches: list[FilePatch] = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].startswith("--- "):
+            index += 1
+            continue
+        old_path = parse_diff_path(lines[index])
+        index += 1
+        if index >= len(lines) or not lines[index].startswith("+++ "):
+            raise ValueError("patch expected +++ header after --- header")
+        new_path = parse_diff_path(lines[index])
+        path, is_new = choose_patch_target(old_path, new_path)
+        index += 1
+        hunk_lines: list[str] = []
+        while index < len(lines) and not lines[index].startswith("--- "):
+            hunk_lines.append(lines[index])
+            index += 1
+        patches.append(FilePatch(path, parse_hunks("".join(hunk_lines)), is_new))
+    if not patches:
+        raise ValueError("patch requires unified diff headers or explicit path")
+    return patches
+
+
+def parse_diff_path(header: str) -> str:
+    path = header[4:].strip().split("\t", 1)[0]
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
+
+
+def choose_patch_target(old_path: str, new_path: str) -> tuple[str, bool]:
+    if new_path == "/dev/null":
+        raise ValueError("patch deletion is not supported")
+    if old_path == "/dev/null":
+        return new_path, True
+    return new_path, False
+
+
+def parse_hunks(patch_text: str) -> list[PatchHunk]:
+    lines = patch_text.splitlines(keepends=True)
+    hunks: list[PatchHunk] = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].startswith("@@"):
+            if lines[index].strip():
+                raise ValueError(f"patch expected hunk header, got {lines[index].rstrip()}")
+            index += 1
+            continue
+        old_start, old_count, new_start, new_count = parse_hunk_header(lines[index])
+        index += 1
+        body: list[str] = []
+        while index < len(lines) and not lines[index].startswith("@@"):
+            body.append(lines[index])
+            index += 1
+        hunks.append(PatchHunk(old_start, old_count, new_start, new_count, body))
+    if not hunks:
+        raise ValueError("patch requires at least one hunk")
+    return hunks
+
+
+def parse_hunk_header(header: str) -> tuple[int, int, int, int]:
+    match = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", header)
+    if not match:
+        raise ValueError(f"invalid hunk header: {header.rstrip()}")
+    old_start = int(match.group(1))
+    old_count = int(match.group(2) or "1")
+    new_start = int(match.group(3))
+    new_count = int(match.group(4) or "1")
+    return old_start, old_count, new_start, new_count
+
+
+def apply_hunks(original: list[str], hunks: list[PatchHunk], path: str) -> list[str]:
+    output: list[str] = []
+    cursor = 0
+    for hunk in hunks:
+        start = max(hunk.old_start - 1, 0)
+        if start < cursor:
+            raise ValueError(f"patch hunk overlaps previous hunk in {path}")
+        output.extend(original[cursor:start])
+        cursor = apply_hunk_lines(original, output, hunk, start, path)
+    output.extend(original[cursor:])
+    return output
+
+
+def apply_hunk_lines(original: list[str], output: list[str], hunk: PatchHunk, cursor: int, path: str) -> int:
+    for line in hunk.lines:
+        if line.startswith("\\ No newline"):
+            continue
+        marker = line[:1]
+        text = line[1:]
+        if marker == " ":
+            cursor = copy_expected_line(original, output, cursor, text, path)
+        elif marker == "-":
+            cursor = remove_expected_line(original, cursor, text, path)
+        elif marker == "+":
+            output.append(text)
+        else:
+            raise ValueError(f"patch invalid hunk line in {path}: {line.rstrip()}")
+    return cursor
+
+
+def copy_expected_line(original: list[str], output: list[str], cursor: int, expected: str, path: str) -> int:
+    ensure_expected_line(original, cursor, expected, path)
+    output.append(original[cursor])
+    return cursor + 1
+
+
+def remove_expected_line(original: list[str], cursor: int, expected: str, path: str) -> int:
+    ensure_expected_line(original, cursor, expected, path)
+    return cursor + 1
+
+
+def ensure_expected_line(original: list[str], cursor: int, expected: str, path: str) -> None:
+    if cursor >= len(original):
+        raise ValueError(f"patch mismatch in {path}: expected {expected.rstrip()} at end of file")
+    actual = original[cursor]
+    if actual != expected:
+        raise ValueError(f"patch mismatch in {path}: expected {expected.rstrip()!r}, found {actual.rstrip()!r}")
 
 
 def normalize_replace_options(from_or_options: Any, to: str | None) -> dict[str, Any]:
@@ -402,6 +558,56 @@ class HttpNamespace:
 
     def head(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
         return self.request("HEAD", url, options)
+
+    def session(self, options: dict[str, Any] | None = None) -> HttpClient:
+        return HttpClient.from_options(options or {})
+
+
+@dataclass(frozen=True)
+class HttpClient:
+    base_url: str | None
+    headers: dict[str, str]
+
+    @classmethod
+    def from_options(cls, options: dict[str, Any]) -> HttpClient:
+        headers = {str(key): str(value) for key, value in options.get("headers", {}).items()}
+        base_url = options.get("base_url")
+        return cls(str(base_url) if base_url is not None else None, headers)
+
+    def request(self, method: str, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+        merged = merge_http_options(self.headers, options or {})
+        return HttpRequestBuilder(method.upper(), join_base_url(self.base_url, url), merged)
+
+    def get(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+        return self.request("GET", url, options)
+
+    def post(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+        return self.request("POST", url, options)
+
+    def put(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+        return self.request("PUT", url, options)
+
+    def patch(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+        return self.request("PATCH", url, options)
+
+    def delete(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+        return self.request("DELETE", url, options)
+
+    def head(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+        return self.request("HEAD", url, options)
+
+
+def merge_http_options(default_headers: dict[str, str], options: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(options)
+    request_headers = {str(key): str(value) for key, value in options.get("headers", {}).items()}
+    merged["headers"] = {**default_headers, **request_headers}
+    return merged
+
+
+def join_base_url(base_url: str | None, url: str) -> str:
+    if base_url is None or urllib.parse.urlparse(url).scheme:
+        return url
+    return urllib.parse.urljoin(base_url.rstrip("/") + "/", url.lstrip("/"))
 
 
 @dataclass(frozen=True)

@@ -115,6 +115,98 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(all_result, {"replacements": 2})
         self.assertEqual(after_all, "one TWO ONE TWO one")
 
+    def test_tools_file_patch_explicit_path_with_hunk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.eval(f"host.cd({tmp!r})")
+            Path(tmp, "note.txt").write_text("one\ntwo\nthree\n")
+            patch = """@@ -1,3 +1,3 @@
+ one
+-two
++TWO
+ three
+"""
+            result = self.eval(f"tools.file.patch('note.txt', {patch!r})")["value"]
+            text = Path(tmp, "note.txt").read_text()
+
+        self.assertEqual(result, [{"path": str(Path(tmp, "note.txt")), "hunks": 1}])
+        self.assertEqual(text, "one\nTWO\nthree\n")
+
+    def test_tools_file_patch_multi_file_diff_with_ab_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.eval(f"host.cd({tmp!r})")
+            Path(tmp, "alpha.txt").write_text("a\nb\nc\n")
+            Path(tmp, "beta.txt").write_text("x\ny\nz\n")
+            patch = """--- a/alpha.txt
++++ b/alpha.txt
+@@ -1,3 +1,3 @@
+ a
+-b
++B
+ c
+--- a/beta.txt
++++ b/beta.txt
+@@ -1,3 +1,3 @@
+ x
+-y
++Y
+ z
+"""
+            result = self.eval(f"tools.file.patch({patch!r})")["value"]
+            alpha_text = Path(tmp, "alpha.txt").read_text()
+            beta_text = Path(tmp, "beta.txt").read_text()
+
+        self.assertEqual(result, [
+            {"path": str(Path(tmp, "alpha.txt")), "hunks": 1},
+            {"path": str(Path(tmp, "beta.txt")), "hunks": 1},
+        ])
+        self.assertEqual(alpha_text, "a\nB\nc\n")
+        self.assertEqual(beta_text, "x\nY\nz\n")
+
+    def test_tools_file_patch_creates_new_file_from_dev_null(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.eval(f"host.cd({tmp!r})")
+            patch = """--- /dev/null
++++ b/new.txt
+@@ -0,0 +1,2 @@
++hello
++world
+"""
+            result = self.eval(f"tools.file.patch({patch!r})")["value"]
+            text = Path(tmp, "new.txt").read_text()
+
+        self.assertEqual(result, [{"path": str(Path(tmp, "new.txt")), "hunks": 1}])
+        self.assertEqual(text, "hello\nworld\n")
+
+    def test_tools_file_patch_context_mismatch_returns_error_shape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.eval(f"host.cd({tmp!r})")
+            Path(tmp, "note.txt").write_text("one\nwrong\nthree\n")
+            patch = """@@ -1,3 +1,3 @@
+ one
+-two
++TWO
+ three
+"""
+            result = self.eval(f"tools.file.patch('note.txt', {patch!r})")
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn("patch mismatch", result["error"])
+        self.assertIn("note.txt", result["error"])
+
+    def test_tools_file_patch_rejects_deletion_diff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.eval(f"host.cd({tmp!r})")
+            Path(tmp, "note.txt").write_text("delete me\n")
+            patch = """--- a/note.txt
++++ /dev/null
+@@ -1 +0,0 @@
+-delete me
+"""
+            result = self.eval(f"tools.file.patch({patch!r})")
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn("deletion is not supported", result["error"])
+
     def test_tmp_file_and_dir_handles_write_and_cleanup(self):
         result = self.eval("""
 f = tmp.file(prefix='pyrun-', suffix='.json')
@@ -299,6 +391,17 @@ class LocalHttpHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"ok": true}')
             return
+        if self.path == "/session":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            payload = {
+                "shared": self.headers.get("X-Shared"),
+                "override": self.headers.get("X-Override"),
+                "path": self.path,
+            }
+            self.wfile.write(json.dumps(payload).encode())
+            return
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
@@ -399,6 +502,15 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(response["headers"]["Content-Type"], "text/plain")
         self.assertEqual(response["headers"]["X-Head"], "yes")
         self.assertEqual(response["body"], [])
+
+    def test_http_session_uses_base_url_and_overrides_headers(self):
+        code = f"""
+client = http.session({{'base_url': {self.base_url!r}, 'headers': {{'X-Shared': 'default', 'X-Override': 'session'}}}})
+client.get('/session', {{'headers': {{'X-Override': 'request'}}}}).json()
+"""
+        data = self.eval(code)["value"]
+
+        self.assertEqual(data, {"shared": "default", "override": "request", "path": "/session"})
 
 
 class JsonlRunnerTests(unittest.TestCase):

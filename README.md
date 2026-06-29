@@ -81,6 +81,27 @@ Available globals:
   shared default `headers`. Client methods match global HTTP helpers. Relative
   URLs join against `base_url`; per-request headers override or extend session
   headers.
+- `fd.find(pattern='.', options=None)`: pure-Python file discovery under
+  `options.root` or the session cwd. Returns paths relative to the session cwd
+  unless `absolute_path` is true. Options: `root`, `type` (`file` or
+  `directory`), `extension`, `max_depth`, `absolute_path`, `glob`, `hidden`,
+  `exclude`, and accepted no-op `ignored`. Hidden paths are skipped by default.
+  `fd.files(root='.', options=None)` and `fd.dirs(root='.', options=None)` are
+  convenience filters.
+- `rg.search(pattern, paths=None, options=None)`: pure-Python text search over
+  files or directories. Returns a result with `stdout`, `stderr`, `exit_code`,
+  `text()`, `lines()`, and `json()`. `rg(pattern, ...)` is an alias for
+  `rg.search`. Options: `fixed`, `ignore_case`, `files_with_matches`,
+  `max_count`, `glob`, `context`, `hidden`, and `json`. `context` is currently
+  accepted but output remains match lines only. `rg.files(...)` returns matching
+  file paths. `rg.matches(...)` returns dictionaries with `path`, `line_number`,
+  `line`, and `submatches` (`text`, `start`, `end`). Text files are decoded with
+  replacement for invalid bytes.
+- `sqlite.query(database, sql, options=None)`: runs SQL with stdlib `sqlite3`.
+  Relative database paths resolve against the session cwd. Queries returning
+  rows produce a list of dict rows. Non-row statements return
+  `{'rows_affected': n}`. `options.json=False` is accepted for parity planning,
+  but this prototype still returns rows/dicts rather than formatted CLI text.
 - `cli.<program>(*args)`: command builder. Uses argv-style execution and no
   shell parsing.
 - `run.<program>(*args)`: immediate command execution.
@@ -116,6 +137,9 @@ cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run
   exists yet.
 - Filesystem helpers cover the first structured-data slice only. YAML is not
   supported without a future non-stdlib decision.
+- `fd`, `rg`, and `sqlite` are pure-Python parity wrappers, not subprocess
+  facades. They intentionally cover a small Hostrun-like subset and do not
+  implement full `fd`, ripgrep, or sqlite CLI behavior.
 
 ## Examples
 
@@ -144,6 +168,18 @@ http.get('http://127.0.0.1:8000/status').text()
 http.post('http://127.0.0.1:8000/items', {'json': {'name': 'apple'}}).json()
 client = http.session({'base_url': 'http://127.0.0.1:8000', 'headers': {'X-App': 'pyrun'}})
 client.get('/status', {'headers': {'X-Trace': '1'}}).json()
+
+fd.find('*.py', {'root': 'src', 'glob': True, 'extension': 'py'})
+fd.files('src')
+fd.dirs('.', {'hidden': True})
+
+rg.search('TODO', ['src'], {'ignore_case': True}).lines()
+rg.files('TODO', ['src'])
+rg.matches('TODO', ['src'], {'fixed': True})
+
+sqlite.query('scratch.db', 'CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)')
+sqlite.query('scratch.db', "INSERT INTO items (name) VALUES ('apple')")
+sqlite.query('scratch.db', 'SELECT id, name FROM items')
 ```
 
 ## Tests

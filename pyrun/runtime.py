@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import csv
+import fnmatch
 import glob as glob_module
 import io
 import itertools
@@ -10,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import urllib.error
@@ -74,6 +76,9 @@ class Session:
             "tools": Tools(self),
             "tmp": TempNamespace(self),
             "http": HttpNamespace(),
+            "fd": FdNamespace(self),
+            "rg": RgNamespace(self),
+            "sqlite": SqliteNamespace(self),
         }
 
 
@@ -460,6 +465,276 @@ def replace_occurrence(text: str, needle: str, replacement: str, matches: list[i
         raise ValueError(f"replace occurrence {occurrence} not found")
     index = matches[occurrence - 1]
     return text[:index] + replacement + text[index + len(needle):], 1
+
+
+class FdNamespace:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def find(self, pattern: str = ".", options: dict[str, Any] | None = None) -> list[str]:
+        normalized = normalize_fd_options(options or {})
+        root = resolve_session_path(self._session, normalized.get("root", "."))
+        matches = [path for path in walk_fd_paths(root, normalized) if fd_path_matches(path, root, pattern, normalized)]
+        return [format_path(path, self._session.cwd, bool(normalized.get("absolute_path"))) for path in sorted(matches)]
+
+    def files(self, root: str | os.PathLike[str] = ".", options: dict[str, Any] | None = None) -> list[str]:
+        merged = {**(options or {}), "root": root, "type": "file"}
+        return self.find(".", merged)
+
+    def dirs(self, root: str | os.PathLike[str] = ".", options: dict[str, Any] | None = None) -> list[str]:
+        merged = {**(options or {}), "root": root, "type": "directory"}
+        return self.find(".", merged)
+
+
+def normalize_fd_options(options: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(options)
+    if "ignored" in normalized:
+        normalized.pop("ignored")
+    excludes = normalized.get("exclude", [])
+    if isinstance(excludes, str):
+        excludes = [excludes]
+    normalized["exclude"] = [str(item) for item in excludes]
+    if normalized.get("type") not in {None, "file", "directory"}:
+        raise ValueError("fd type must be 'file' or 'directory'")
+    return normalized
+
+
+def walk_fd_paths(root: Path, options: dict[str, Any]) -> list[Path]:
+    if not root.exists():
+        return []
+    hidden = bool(options.get("hidden"))
+    max_depth = options.get("max_depth")
+    max_depth_int = int(max_depth) if max_depth is not None else None
+    results: list[Path] = []
+    for current, dirs, files in os.walk(root):
+        current_path = Path(current)
+        depth = relative_depth(current_path, root)
+        if not hidden:
+            dirs[:] = [item for item in dirs if not is_hidden_name(item)]
+            files = [item for item in files if not is_hidden_name(item)]
+        dirs[:] = [item for item in dirs if not excluded_path(current_path / item, root, options["exclude"])]
+        files = [item for item in files if not excluded_path(current_path / item, root, options["exclude"])]
+        if max_depth_int is not None and depth >= max_depth_int:
+            dirs[:] = []
+        if options.get("type") in {None, "directory"} and current_path != root:
+            results.append(current_path)
+        if options.get("type") in {None, "file"}:
+            results.extend(current_path / name for name in files)
+    return results
+
+
+def fd_path_matches(path: Path, root: Path, pattern: str, options: dict[str, Any]) -> bool:
+    if extension := options.get("extension"):
+        if path.suffix.lstrip(".") != str(extension).lstrip("."):
+            return False
+    if pattern in {"", "."}:
+        return True
+    name = path.name
+    relative = path.relative_to(root).as_posix()
+    if options.get("glob"):
+        return fnmatch.fnmatch(name, pattern) or fnmatch.fnmatch(relative, pattern)
+    return pattern in name
+
+
+def excluded_path(path: Path, root: Path, excludes: list[str]) -> bool:
+    relative = path.relative_to(root).as_posix()
+    return any(fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative, pattern) for pattern in excludes)
+
+
+def relative_depth(path: Path, root: Path) -> int:
+    if path == root:
+        return 0
+    return len(path.relative_to(root).parts)
+
+
+def is_hidden_name(name: str) -> bool:
+    return name.startswith(".")
+
+
+class RgNamespace:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def __call__(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> SearchResult:
+        return self.search(pattern, paths, options)
+
+    def search(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> SearchResult:
+        normalized = normalize_rg_options(options or {})
+        matches = collect_rg_matches(self._session, pattern, paths, normalized)
+        stdout = render_rg_stdout(matches, normalized)
+        return SearchResult(stdout=stdout, stderr="", exit_code=0 if matches else 1, matches=matches, json_mode=bool(normalized.get("json")))
+
+    def files(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> list[str]:
+        normalized = normalize_rg_options(options or {})
+        matches = collect_rg_matches(self._session, pattern, paths, normalized)
+        return sorted({match["path"] for match in matches})
+
+    def matches(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        normalized = normalize_rg_options(options or {})
+        return collect_rg_matches(self._session, pattern, paths, normalized)
+
+
+@dataclass
+class SearchResult:
+    stdout: str
+    stderr: str
+    exit_code: int
+    matches: list[dict[str, Any]] = field(default_factory=list)
+    json_mode: bool = False
+
+    def text(self) -> str:
+        return self.stdout
+
+    def lines(self) -> list[str]:
+        return self.stdout.splitlines()
+
+    def json(self) -> Any:
+        if self.json_mode:
+            return [rg_json_event(match) for match in self.matches]
+        return json.loads(self.stdout)
+
+
+def normalize_rg_options(options: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(options)
+    if isinstance(normalized.get("glob"), str):
+        normalized["glob"] = [normalized["glob"]]
+    elif normalized.get("glob") is None:
+        normalized["glob"] = []
+    return normalized
+
+
+def collect_rg_matches(session: Session, pattern: str, paths: Any, options: dict[str, Any]) -> list[dict[str, Any]]:
+    compiled = compile_rg_pattern(pattern, options)
+    results: list[dict[str, Any]] = []
+    per_file_counts: dict[str, int] = {}
+    for path in iter_rg_files(session, paths, options):
+        display = format_path(path, session.cwd, False)
+        for line_number, line in enumerate(read_text_lines(path), start=1):
+            submatches = find_rg_submatches(compiled, line, pattern, options)
+            if not submatches:
+                continue
+            limit = options.get("max_count")
+            if limit is not None and per_file_counts.get(display, 0) >= int(limit):
+                break
+            match = {"path": display, "line_number": line_number, "line": line, "submatches": submatches}
+            results.append(match)
+            per_file_counts[display] = per_file_counts.get(display, 0) + 1
+    return results
+
+
+def compile_rg_pattern(pattern: str, options: dict[str, Any]) -> re.Pattern[str] | None:
+    if options.get("fixed"):
+        return None
+    flags = re.IGNORECASE if options.get("ignore_case") else 0
+    return re.compile(pattern, flags)
+
+
+def find_rg_submatches(compiled: re.Pattern[str] | None, line: str, pattern: str, options: dict[str, Any]) -> list[dict[str, Any]]:
+    if compiled is not None:
+        return [{"text": match.group(0), "start": match.start(), "end": match.end()} for match in compiled.finditer(line)]
+    haystack = line.lower() if options.get("ignore_case") else line
+    needle = pattern.lower() if options.get("ignore_case") else pattern
+    submatches: list[dict[str, Any]] = []
+    start = 0
+    while needle:
+        index = haystack.find(needle, start)
+        if index < 0:
+            break
+        end = index + len(needle)
+        submatches.append({"text": line[index:end], "start": index, "end": end})
+        start = end
+    return submatches
+
+
+def iter_rg_files(session: Session, paths: Any, options: dict[str, Any]) -> list[Path]:
+    roots = normalize_rg_paths(session, paths)
+    files: list[Path] = []
+    for root in roots:
+        if root.is_file():
+            candidates = [root]
+        else:
+            candidates = list(walk_search_files(root, bool(options.get("hidden"))))
+        files.extend(path for path in candidates if rg_glob_matches(path, session.cwd, options.get("glob", [])))
+    return sorted(dict.fromkeys(files))
+
+
+def normalize_rg_paths(session: Session, paths: Any) -> list[Path]:
+    if paths is None:
+        return [session.cwd]
+    if isinstance(paths, (str, os.PathLike)):
+        paths = [paths]
+    return [resolve_session_path(session, path) for path in paths]
+
+
+def walk_search_files(root: Path, hidden: bool) -> list[Path]:
+    results: list[Path] = []
+    if not root.exists():
+        return results
+    for current, dirs, files in os.walk(root):
+        if not hidden:
+            dirs[:] = [item for item in dirs if not is_hidden_name(item)]
+            files = [item for item in files if not is_hidden_name(item)]
+        results.extend(Path(current) / name for name in files)
+    return results
+
+
+def rg_glob_matches(path: Path, cwd: Path, patterns: list[str]) -> bool:
+    if not patterns:
+        return True
+    display = format_path(path, cwd, False)
+    return any(fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(display, pattern) for pattern in patterns)
+
+
+def read_text_lines(path: Path) -> list[str]:
+    return path.read_text(errors="replace").splitlines()
+
+
+def render_rg_stdout(matches: list[dict[str, Any]], options: dict[str, Any]) -> str:
+    if options.get("json"):
+        return "\n".join(json.dumps(rg_json_event(match)) for match in matches) + ("\n" if matches else "")
+    if options.get("files_with_matches"):
+        lines = sorted({match["path"] for match in matches})
+    else:
+        lines = [f'{match["path"]}:{match["line_number"]}:{match["line"]}' for match in matches]
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def rg_json_event(match: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "match", "data": match}
+
+
+class SqliteNamespace:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def query(self, database: str | os.PathLike[str], sql: str, options: dict[str, Any] | None = None) -> Any:
+        del options
+        target = resolve_session_path(self._session, database)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(target) as connection:
+            connection.row_factory = sqlite3.Row
+            cursor = connection.execute(sql)
+            if cursor.description is not None:
+                return [dict(row) for row in cursor.fetchall()]
+            connection.commit()
+            return {"rows_affected": cursor.rowcount}
+
+
+def resolve_session_path(session: Session, path: str | os.PathLike[str]) -> Path:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        candidate = session.cwd / candidate
+    return candidate.resolve()
+
+
+def format_path(path: Path, cwd: Path, absolute: bool) -> str:
+    resolved = path.resolve()
+    if absolute:
+        return str(resolved)
+    try:
+        return resolved.relative_to(cwd).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 class TempNamespace:
@@ -956,6 +1231,15 @@ def to_json_value(value: Any) -> Any:
             "stdout": value.stdout,
             "stderr": value.stderr,
             "exit_code": value.exit_code,
+        }
+    if isinstance(value, SearchResult):
+        return {
+            "stdout": value.stdout,
+            "stderr": value.stderr,
+            "exit_code": value.exit_code,
+            "text": value.text(),
+            "lines": value.lines(),
+            "json": value.json() if value.json_mode else None,
         }
     if isinstance(value, ProcessHandle):
         return {

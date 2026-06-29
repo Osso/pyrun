@@ -368,6 +368,61 @@ d.cleanup()
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.exit_code, 0)
 
+    def test_fd_find_files_and_dirs_filter_from_session_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "src").mkdir()
+            Path(tmp, "src", "app.py").write_text("print('hi')")
+            Path(tmp, "src", "note.txt").write_text("note")
+            Path(tmp, "src", ".secret.py").write_text("hidden")
+            Path(tmp, ".hidden_dir").mkdir()
+            Path(tmp, ".hidden_dir", "hidden.py").write_text("hidden")
+            self.eval(f"host.cd({tmp!r})")
+            py_files = self.eval("fd.find('*.py', {'root': 'src', 'glob': True, 'extension': 'py'})") ["value"]
+            hidden_files = self.eval("fd.find('*.py', {'glob': True, 'hidden': True})") ["value"]
+            files = self.eval("fd.files('src')") ["value"]
+            dirs = self.eval("fd.dirs('.')") ["value"]
+            absolute = self.eval("fd.find('app.py', {'root': 'src', 'absolute_path': True})") ["value"]
+
+        self.assertEqual(py_files, ["src/app.py"])
+        self.assertEqual(hidden_files, [".hidden_dir/hidden.py", "src/.secret.py", "src/app.py"])
+        self.assertEqual(files, ["src/app.py", "src/note.txt"])
+        self.assertEqual(dirs, ["src"])
+        self.assertEqual(absolute, [str(Path(tmp, "src", "app.py"))])
+
+    def test_rg_search_files_matches_and_json_use_session_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "src").mkdir()
+            Path(tmp, "src", "alpha.txt").write_text("Hello world\nhello again\n")
+            Path(tmp, "src", "beta.log").write_text("HELLO log\n")
+            Path(tmp, "src", ".hidden.txt").write_text("hello hidden\n")
+            self.eval(f"host.cd({tmp!r})")
+            result = self.eval("rg.search('hello', ['src'], {'ignore_case': True, 'glob': '*.txt', 'context': 1})") ["value"]
+            fixed = self.eval("rg.search('Hello world', ['src'], {'fixed': True})") ["value"]
+            files = self.eval("rg.files('hello', ['src'], {'ignore_case': True})") ["value"]
+            matches = self.eval("rg.matches('hello', ['src'], {'ignore_case': True, 'max_count': 1})") ["value"]
+            json_rows = self.eval("rg.search('hello', ['src'], {'ignore_case': True, 'json': True}).json()") ["value"]
+
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["lines"], ["src/alpha.txt:1:Hello world", "src/alpha.txt:2:hello again"])
+        self.assertEqual(fixed["text"], "src/alpha.txt:1:Hello world\n")
+        self.assertEqual(files, ["src/alpha.txt", "src/beta.log"])
+        self.assertEqual(matches[0], {"path": "src/alpha.txt", "line_number": 1, "line": "Hello world", "submatches": [{"text": "Hello", "start": 0, "end": 5}]})
+        self.assertEqual(json_rows[0]["type"], "match")
+        self.assertEqual(json_rows[0]["data"]["path"], "src/alpha.txt")
+
+    def test_sqlite_query_returns_dict_rows_and_resolves_relative_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.eval(f"host.cd({tmp!r})")
+            create_result = self.eval("sqlite.query('items.db', 'CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)')") ["value"]
+            insert_result = self.eval("sqlite.query('items.db', \"INSERT INTO items (name) VALUES ('apple'), ('pear')\")") ["value"]
+            rows = self.eval("sqlite.query('items.db', 'SELECT id, name FROM items ORDER BY id')") ["value"]
+            database_exists = Path(tmp, "items.db").exists()
+
+        self.assertEqual(create_result, {"rows_affected": -1})
+        self.assertEqual(insert_result, {"rows_affected": 2})
+        self.assertEqual(rows, [{"id": 1, "name": "apple"}, {"id": 2, "name": "pear"}])
+        self.assertTrue(database_exists)
+
     def test_print_output_is_captured_as_console(self):
         result = self.eval("print('hello')\n7")
 

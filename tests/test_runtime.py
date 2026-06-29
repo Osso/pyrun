@@ -312,6 +312,44 @@ d.cleanup()
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(inherited.stdout, "True\n")
 
+    def test_command_builder_env_clear_removes_parent_environment(self):
+        key = "PYRUN_TEST_ENV_CLEAR_UNIQUE"
+        old_value = os.environ.get(key)
+        os.environ[key] = "parent-only"
+        try:
+            result = CommandBuilder(Session(), sys.executable)(
+                "-c",
+                f"import os; print({key!r} in os.environ)",
+            ).env_clear().run()
+        finally:
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+
+        self.assertEqual(result.stdout, "False\n")
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.exit_code, 0)
+
+    def test_command_builder_env_override_works_without_inheritance(self):
+        key = "PYRUN_TEST_ENV_OVERRIDE_NO_INHERIT"
+        old_value = os.environ.get(key)
+        os.environ[key] = "parent-value"
+        try:
+            result = CommandBuilder(Session(), sys.executable)(
+                "-c",
+                f"import os; print(os.environ[{key!r}])",
+            ).env_inherit(False).env(key, "override-value").run()
+        finally:
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+
+        self.assertEqual(result.stdout, "override-value\n")
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.exit_code, 0)
+
     def test_command_builder_stdin_file_json_lines_csv_and_tsv(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Session(cwd=Path(tmp))
@@ -897,6 +935,33 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(result["approval"]["args"]["url"], "http://127.0.0.1:1/x")
             self.assertFalse(target.parent.exists())
             self.assertFalse(target.exists())
+
+    def test_pending_approval_http_to_file_relative_path_uses_session_cwd_without_creating_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = SessionStore.pending_approval()
+            result = store.evaluate(
+                f"host.cd({tmp!r})\nhttp.get('http://127.0.0.1:1/x').to_file('nested/out.txt')"
+            )
+            target = Path(tmp, "nested", "out.txt")
+
+            self.assertEqual(result["type"], "needs_approval")
+            self.assertEqual(result["approval"]["tool"], "http.request")
+            self.assertFalse(target.parent.exists())
+            self.assertFalse(target.exists())
+
+    def test_http_to_file_relative_path_uses_session_cwd(self):
+        process_cwd_target = Path.cwd() / "download.txt"
+        process_cwd_target.unlink(missing_ok=True)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = self.eval(f"host.cd({tmp!r})\nhttp.get({self.base_url + '/text'!r}).to_file('download.txt')")["value"]
+                target = Path(tmp, "download.txt")
+
+                self.assertEqual(result, str(target))
+                self.assertEqual(target.read_text(), "hello")
+                self.assertFalse(process_cwd_target.exists())
+        finally:
+            process_cwd_target.unlink(missing_ok=True)
 
     def test_http_post_json_form_body_and_to_file(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -149,7 +149,8 @@ Available globals:
   `write_json_lines` / `write_jsonl`, `write_csv`, and `write_tsv`.
 - `http.request(method, url, options=None)` plus `http.get/post/put/patch/delete/head`.
   Options support `headers`, raw `body`, `json`, and `form`. Builders expose
-  `run()`, `text()`, `json()`, `bytes()`, and `to_file(path)`.
+  `run()`, `text()`, `json()`, `bytes()`, and `to_file(path)`. Relative
+  `to_file` paths resolve against the session cwd.
 - `http.session(options=None)`: returns a client with optional `base_url` and
   shared default `headers`. Client methods match global HTTP helpers. Relative
   URLs join against `base_url`; per-request headers override or extend session
@@ -179,7 +180,7 @@ Available globals:
   Options include `name`, `namespace`, `all_namespaces`, `selector`, and
   `output` (default `json`).
 - `tools.sudo(command_builder)`: wraps a command builder with `authsudo`,
-  preserving argv, stdin, cwd, and environment overrides.
+  preserving argv, stdin, cwd, environment overrides, and environment inheritance.
 - `tools.powershell(script, options=None)`: returns a `pwsh`/PowerShell builder
   using `-NoProfile -EncodedCommand` with UTF-16LE base64. Use
   `{'executable': 'powershell'}` or another executable to override `pwsh`.
@@ -248,6 +249,8 @@ cli.python3('-c', 'print(123)').text()
 cli.python3('-c', 'print(123)').lines()
 cli.python3('-c', 'import json; print(json.dumps({"ok": True}))').json()
 cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()
+cli.python3('-c', 'import os; print(os.environ["NAME"])').env('NAME', 'value').run()
+cli.python3('-c', 'import os; print(os.environ)').env_clear().env('NAME', 'value').run()
 cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run()
 
 producer = cli.python3('-c', 'print("hello")')
@@ -258,6 +261,11 @@ producer.pipe_to(consumer)
 stderr_producer = cli.python3('-c', 'import sys; print("warning", file=sys.stderr)')
 consumer.stdin_from(stderr_producer.stderr_stream()).run()
 ```
+
+`env(name, value)` and `env(dict)` add or override environment variables.
+Commands inherit `os.environ` by default. Use `env_inherit(False)` or
+`env_clear()` to run with only explicit overrides, or an empty environment when
+no overrides are set.
 
 `stdin_from(source, stream='stdout')` accepts another `CommandBuilder`, a
 `CommandStream` from `.stream()`, `.stdout_stream()`, or `.stderr_stream()`, an

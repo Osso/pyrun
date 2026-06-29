@@ -646,6 +646,7 @@ class Tools:
             cwd=command.cwd,
             stdin=command.stdin,
             env_overrides=command.env_overrides,
+            inherit_env=command.inherit_env,
         )
 
     def powershell(self, script: str, options: dict[str, Any] | None = None) -> CommandBuilder:
@@ -1263,7 +1264,7 @@ class SshTools:
             args = ["-p", str(self._options["password"]), *args]
         builder = CommandBuilder(self._session, program)(*args)
         if source is not None:
-            builder = builder._copy(cwd=source.cwd, stdin=source.stdin, env_overrides=source.env_overrides)
+            builder = builder._copy(cwd=source.cwd, stdin=source.stdin, env_overrides=source.env_overrides, inherit_env=source.inherit_env)
         return builder
 
 
@@ -1467,10 +1468,16 @@ class HttpRequestBuilder:
 
     def to_file(self, path: str | os.PathLike[str]) -> str:
         response = self.run()
-        target = Path(path).expanduser()
+        target = self._resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(response.body)
         return str(target)
+
+    def _resolve(self, path: str | os.PathLike[str]) -> Path:
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.session.cwd / candidate
+        return candidate.resolve()
 
 
 @dataclass(frozen=True)
@@ -1540,6 +1547,7 @@ class CommandBuilder:
     stdin: str | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     stdin_source: CommandStream | CommandResult | None = None
+    inherit_env: bool = True
 
     def __call__(self, *args: object) -> CommandBuilder:
         return self._copy(args=self.args + tuple(str(arg) for arg in args))
@@ -1550,6 +1558,12 @@ class CommandBuilder:
     def env(self, name_or_values: str | dict[Any, Any], value: object | None = None) -> CommandBuilder:
         updates = normalize_env_updates(name_or_values, value)
         return self._copy(env_overrides={**self.env_overrides, **updates})
+
+    def env_inherit(self, enabled: bool) -> CommandBuilder:
+        return self._copy(inherit_env=bool(enabled))
+
+    def env_clear(self) -> CommandBuilder:
+        return self.env_inherit(False)
 
     def stream(self, stream: str = "stdout") -> CommandStream:
         return CommandStream(self, stream)
@@ -1705,7 +1719,8 @@ class CommandBuilder:
         return self.stdin, ()
 
     def _subprocess_env(self) -> dict[str, str]:
-        return {**os.environ, **self.env_overrides}
+        base = dict(os.environ) if self.inherit_env else {}
+        return {**base, **self.env_overrides}
 
     def _copy(self, **changes: Any) -> CommandBuilder:
         values = {
@@ -1716,6 +1731,7 @@ class CommandBuilder:
             "stdin": self.stdin,
             "env_overrides": self.env_overrides,
             "stdin_source": self.stdin_source,
+            "inherit_env": self.inherit_env,
         }
         values.update(changes)
         return CommandBuilder(**values)

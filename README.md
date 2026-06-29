@@ -19,23 +19,64 @@ printf '%s\n' \
   python -m pyrun.jsonl
 ```
 
-Each input line is a JSON object:
+### JSONL protocol
+
+Each input line is one JSON object. `code` is required and must be a string.
+`session_id` is optional and must be a string when present; omitted requests use
+`default`.
 
 ```json
 {"session_id":"optional-session", "code":"1 + 2"}
 ```
 
-Each output line is either:
+Each output line is either a completed evaluation:
 
 ```json
 {"type":"completed","executed":"1 + 2","console":[],"value":3}
 ```
 
-or:
+or an error shape for invalid requests or evaluation failures:
 
 ```json
 {"type":"error","executed":"1 / 0","error":"division by zero"}
 ```
+
+Invalid JSON, non-object requests, missing/non-string `code`, and non-string
+`session_id` are reported as error objects. Runtime helper objects such as
+command builders, command streams, command results, HTTP request/response
+objects, bytes, and `hr(...)` wrappers are converted to JSON-compatible values.
+
+### MCP stdio server
+
+`pyrun` also exposes a minimal MCP stdio server:
+
+```sh
+python -m pyrun.mcp
+# or, when installed from pyproject scripts:
+pyrun-mcp
+```
+
+The server uses MCP JSON-RPC messages framed with `Content-Length` headers. It
+supports `initialize`, `notifications/initialized`, `tools/list`, and
+`tools/call`. The single tool is `pyrun_eval`, which evaluates synchronous
+Python in a persistent Pyrun session.
+
+Tool input schema:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "session_id": {"type": "string"},
+    "code": {"type": "string"}
+  },
+  "required": ["code"]
+}
+```
+
+Successful `tools/call` responses include `content` with pretty-printed JSON and
+`structuredContent.result` with the raw JSON-compatible Pyrun result. Unknown
+tools and invalid params return `isError: true` tool results.
 
 ## Runtime API
 

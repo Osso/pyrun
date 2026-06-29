@@ -1931,6 +1931,12 @@ def to_json_value(value: Any) -> Any:
             "program": value.program,
             "args": list(value.args),
         }
+    if isinstance(value, HttpRequestBuilder):
+        return {
+            "method": value.method,
+            "url": value.url,
+            "options": to_json_value(value.options),
+        }
     if isinstance(value, HttpResponse):
         return {
             "status": value.status,

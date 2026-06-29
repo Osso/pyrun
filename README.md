@@ -102,6 +102,33 @@ Available globals:
   rows produce a list of dict rows. Non-row statements return
   `{'rows_affected': n}`. `options.json=False` is accepted for parity planning,
   but this prototype still returns rows/dicts rather than formatted CLI text.
+- `kubectl.get(resource, options=None)`: returns a `kubectl get` command builder.
+  Options include `name`, `namespace`, `all_namespaces`, `selector`, and
+  `output` (default `json`).
+- `tools.sudo(command_builder)`: wraps a command builder with `authsudo`,
+  preserving argv, stdin, cwd, and environment overrides.
+- `tools.powershell(script, options=None)`: returns a `pwsh`/PowerShell builder
+  using `-NoProfile -EncodedCommand` with UTF-16LE base64. Use
+  `{'executable': 'powershell'}` or another executable to override `pwsh`.
+- `tools.ssh(options=None)`: returns an SSH helper with `run(command_builder)`
+  and `cli(command_builder_or_string)`. It builds argv-style `ssh` commands,
+  optionally via `sshpass -p` for `password_mode='plain'`; it does not execute
+  unless the returned builder is run.
+- `tools.browser`: command-builder wrappers around `browser-cli`: `open(url)`,
+  `get(name)`, `snapshot(options=None)`, `exceptions(options=None)`, and
+  `console(options=None)`.
+- `tools.git.status(options=None)`: executes `git status --short --branch` and
+  returns text. `cwd` or `repo` selects the repository.
+- `tools.git.build_commit(options)` builds a safe `git commit --file -` command
+  using stdin for the message; `tools.git.commit(options)` executes it. Options
+  require `subject` (or `message`) and support `body`, `body_lines`, `paths`/`files`/`path`/
+  `file`, `cwd`/`repo`, `amend`, `no_edit`, `allow_empty`, `no_verify`,
+  `signoff`, and `all`. Literal newlines in `subject` are rejected.
+- `tools.github.pr_view`/`run_view`/`create_pr` return `gh` command builders;
+  camelCase aliases are also available for those methods.
+- `tools.tmux`: returns tmux command builders for `command(...)`, `open(name)`,
+  `close(target)`, `send(target, keys)`, `capture(target)`, and a lightweight
+  `run(target, command)` shape containing send/capture builders.
 - `text`: string helper namespace. Includes `lines(value, start=None, end=None)`
   with 1-based inclusive ranges, `range(value, start, end=None)` as an alias
   for `lines`, `line_count`, `word_count`, `head`, `tail`,
@@ -127,7 +154,8 @@ Available globals:
   Hostrun patches JavaScript prototypes, so these helpers are explicit globals
   instead. Wrapper values are unwrapped during JSONL result conversion.
 - `cli.<program>(*args)`: command builder. Uses argv-style execution and no
-  shell parsing.
+  shell parsing. Returning a builder from JSONL/session evaluation serializes it
+  as `{program, args, cwd, env, stdin}` for inspection.
 - `run.<program>(*args)`: immediate command execution.
 
 Command results expose:
@@ -166,6 +194,10 @@ cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run
 - `fd`, `rg`, and `sqlite` are pure-Python parity wrappers, not subprocess
   facades. They intentionally cover a small Hostrun-like subset and do not
   implement full `fd`, ripgrep, or sqlite CLI behavior.
+- Tool command wrappers are thin argv builders around local CLIs. They do not
+  install or probe external tools, and most wrappers do not execute until callers
+  explicitly call `.run()`, `.text()`, `.json()`, etc. `tools.git.status()` and
+  `tools.git.commit()` are the exceptions because they are execution helpers.
 
 ## Examples
 
@@ -206,6 +238,15 @@ rg.matches('TODO', ['src'], {'fixed': True})
 sqlite.query('scratch.db', 'CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)')
 sqlite.query('scratch.db', "INSERT INTO items (name) VALUES ('apple')")
 sqlite.query('scratch.db', 'SELECT id, name FROM items')
+
+kubectl.get('pods', {'namespace': 'prod'})
+tools.browser.open('https://example.test')
+tools.sudo(cli.systemctl('restart', 'example.service'))
+tools.powershell('Write-Output hello')
+remote = tools.ssh({'host': 'server.test', 'user': 'alice', 'port': 2222})
+remote.run(cli.echo('hello'))
+tools.github.pr_view(12, {'json': ['number', 'title']})
+tools.tmux.open('scratch')
 
 text.lines('a\nb\nc', 2, 3)
 text.range('a\nb\nc', 2)

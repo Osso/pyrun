@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import base64
 import builtins
 import contextlib
 import csv
@@ -425,6 +426,7 @@ class Session:
             "fd": FdNamespace(self),
             "rg": RgNamespace(self),
             "sqlite": SqliteNamespace(self),
+            "kubectl": KubectlNamespace(self),
             "text": TextNamespace(),
             "seq": SeqNamespace(),
             "obj": ObjNamespace(),
@@ -603,7 +605,33 @@ def read_toml_file(path: Path) -> Any:
 
 class Tools:
     def __init__(self, session: Session) -> None:
+        self._session = session
         self.file = FileTools(session)
+        self.git = GitTools(session)
+        self.github = GithubTools(session)
+        self.tmux = TmuxTools(session)
+        self.browser = BrowserTools(session)
+
+    def sudo(self, command: CommandBuilder) -> CommandBuilder:
+        if not isinstance(command, CommandBuilder):
+            raise TypeError("tools.sudo expects a CommandBuilder")
+        return CommandBuilder(
+            self._session,
+            "authsudo",
+            (command.program, *command.args),
+            cwd=command.cwd,
+            stdin=command.stdin,
+            env_overrides=command.env_overrides,
+        )
+
+    def powershell(self, script: str, options: dict[str, Any] | None = None) -> CommandBuilder:
+        options = options or {}
+        executable = str(options.get("executable", "pwsh"))
+        encoded = base64.b64encode(str(script).encode("utf-16le")).decode("ascii")
+        return CommandBuilder(self._session, executable)("-NoProfile", "-EncodedCommand", encoded)
+
+    def ssh(self, options: dict[str, Any] | None = None) -> SshTools:
+        return SshTools(self._session, options or {})
 
 
 class FileTools:
@@ -1076,6 +1104,143 @@ class SqliteNamespace:
             return {"rows_affected": cursor.rowcount}
 
 
+class KubectlNamespace:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def get(self, resource: str, options: dict[str, Any] | None = None) -> CommandBuilder:
+        options = options or {}
+        args = ["get", str(resource)]
+        if name := options.get("name"):
+            args.append(str(name))
+        if namespace := options.get("namespace"):
+            args.extend(["--namespace", str(namespace)])
+        if options.get("all_namespaces"):
+            args.append("--all-namespaces")
+        if selector := options.get("selector"):
+            args.extend(["--selector", str(selector)])
+        args.extend(["--output", str(options.get("output", "json"))])
+        return CommandBuilder(self._session, "kubectl")(*args)
+
+
+class GitTools:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def status(self, options: dict[str, Any] | None = None) -> str:
+        return self._git_builder(options or {})("status", "--short", "--branch").text()
+
+    def build_commit(self, options: dict[str, Any]) -> CommandBuilder:
+        subject = required_commit_subject(options)
+        message = commit_message(subject, options)
+        builder = self._git_builder(options)("commit", "--file", "-")
+        builder = append_commit_flags(builder, options)
+        paths = normalize_paths(options)
+        if paths:
+            builder = builder("--", *paths)
+        return builder.stdin_text(message)
+
+    def commit(self, options: dict[str, Any]) -> CommandResult:
+        return self.build_commit(options).run()
+
+    def _git_builder(self, options: dict[str, Any]) -> CommandBuilder:
+        builder = CommandBuilder(self._session, "git")
+        cwd = options.get("cwd", options.get("repo"))
+        return builder.in_(cwd) if cwd else builder
+
+
+class GithubTools:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def pr_view(self, number: int | str | None = None, options: dict[str, Any] | None = None) -> CommandBuilder:
+        return gh_builder(self._session, ["pr", "view"], number, options)
+
+    def run_view(self, run_id: int | str | None = None, options: dict[str, Any] | None = None) -> CommandBuilder:
+        return gh_builder(self._session, ["run", "view"], run_id, options)
+
+    def create_pr(self, options: dict[str, Any] | None = None) -> CommandBuilder:
+        return append_options(CommandBuilder(self._session, "gh")("pr", "create"), options or {})
+
+    prView = pr_view
+    runView = run_view
+    createPr = create_pr
+
+
+class TmuxTools:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def command(self, *args: object) -> CommandBuilder:
+        return CommandBuilder(self._session, "tmux")(*args)
+
+    def open(self, name: str, options: dict[str, Any] | None = None) -> CommandBuilder:
+        del options
+        return self.command("new-session", "-d", "-s", name)
+
+    def close(self, target: str) -> CommandBuilder:
+        return self.command("kill-session", "-t", target)
+
+    def send(self, target: str, keys: str) -> CommandBuilder:
+        return self.command("send-keys", "-t", target, keys, "Enter")
+
+    def capture(self, target: str) -> CommandBuilder:
+        return self.command("capture-pane", "-p", "-t", target)
+
+    def run(self, target: str, command: str) -> dict[str, CommandBuilder]:
+        return {"send": self.send(target, command), "capture": self.capture(target)}
+
+
+class BrowserTools:
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def open(self, url: str) -> CommandBuilder:
+        return self._browser("open", url)
+
+    def get(self, name: str) -> CommandBuilder:
+        return self._browser("get", name)
+
+    def snapshot(self, options: dict[str, Any] | None = None) -> CommandBuilder:
+        return append_options(self._browser("snapshot"), options or {})
+
+    def exceptions(self, options: dict[str, Any] | None = None) -> CommandBuilder:
+        return append_options(self._browser("exceptions"), options or {})
+
+    def console(self, options: dict[str, Any] | None = None) -> CommandBuilder:
+        return append_options(self._browser("console"), options or {})
+
+    def _browser(self, *args: object) -> CommandBuilder:
+        return CommandBuilder(self._session, "browser-cli")(*args)
+
+
+class SshTools:
+    def __init__(self, session: Session, options: dict[str, Any]) -> None:
+        self._session = session
+        self._options = options
+
+    def run(self, command: CommandBuilder) -> CommandBuilder:
+        if not isinstance(command, CommandBuilder):
+            raise TypeError("ssh.run expects a CommandBuilder")
+        return self._build((command.program, *command.args), command)
+
+    def cli(self, command: CommandBuilder | str) -> CommandBuilder:
+        if isinstance(command, CommandBuilder):
+            return self.run(command)
+        return self._build((str(command),), None)
+
+    def _build(self, remote_args: tuple[str, ...], source: CommandBuilder | None) -> CommandBuilder:
+        args = ssh_base_args(self._options) + ["--", *remote_args]
+        program = "ssh"
+        if self._options.get("password") and self._options.get("password_mode", "plain") == "plain":
+            program = "sshpass"
+            args = ["-p", str(self._options["password"]), *args]
+        builder = CommandBuilder(self._session, program)(*args)
+        if source is not None:
+            builder = builder._copy(cwd=source.cwd, stdin=source.stdin, env_overrides=source.env_overrides)
+        return builder
+
+
 def resolve_session_path(session: Session, path: str | os.PathLike[str]) -> Path:
     candidate = Path(path).expanduser()
     if not candidate.is_absolute():
@@ -1496,6 +1661,87 @@ def normalize_env_updates(name_or_values: str | dict[Any, Any], value: object | 
     return {str(name_or_values): str(value)}
 
 
+def required_commit_subject(options: dict[str, Any]) -> str:
+    value = str(options.get("subject", options.get("message", "")))
+    if not value:
+        raise ValueError("subject or message is required")
+    if "\n" in value or "\r" in value:
+        raise ValueError("subject must be a single line")
+    return value
+
+
+def commit_message(subject: str, options: dict[str, Any]) -> str:
+    body_parts: list[str] = []
+    if body := options.get("body"):
+        body_parts.append(str(body))
+    if body_lines := options.get("body_lines", options.get("bodyLines")):
+        body_parts.append("\n".join(str(line) for line in body_lines))
+    body = "\n\n".join(part for part in body_parts if part)
+    return f"{subject}\n\n{body}\n" if body else f"{subject}\n"
+
+
+def append_commit_flags(builder: CommandBuilder, options: dict[str, Any]) -> CommandBuilder:
+    flag_map = {
+        "amend": "--amend",
+        "no_edit": "--no-edit",
+        "noEdit": "--no-edit",
+        "allow_empty": "--allow-empty",
+        "allowEmpty": "--allow-empty",
+        "no_verify": "--no-verify",
+        "noVerify": "--no-verify",
+        "signoff": "--signoff",
+        "all": "--all",
+    }
+    for key, flag in flag_map.items():
+        if options.get(key):
+            builder = builder(flag)
+    return builder
+
+
+def normalize_paths(options: dict[str, Any]) -> list[str]:
+    values: list[Any] = []
+    for key in ("paths", "files"):
+        item = options.get(key)
+        if item:
+            values.extend(item if isinstance(item, list | tuple) else [item])
+    for key in ("path", "file"):
+        if item := options.get(key):
+            values.append(item)
+    return [str(value) for value in values]
+
+
+def append_options(builder: CommandBuilder, options: dict[str, Any]) -> CommandBuilder:
+    for key, value in options.items():
+        flag = "--" + str(key).replace("_", "-")
+        if isinstance(value, bool):
+            if value:
+                builder = builder(flag)
+        elif isinstance(value, list | tuple):
+            builder = builder(flag, ",".join(str(item) for item in value))
+        elif value is not None:
+            builder = builder(flag, value)
+    return builder
+
+
+def gh_builder(session: Session, prefix: list[str], target: int | str | None, options: dict[str, Any] | None) -> CommandBuilder:
+    builder = CommandBuilder(session, "gh")(*prefix)
+    if target is not None:
+        builder = builder(str(target))
+    return append_options(builder, options or {})
+
+
+def ssh_base_args(options: dict[str, Any]) -> list[str]:
+    host = options.get("host")
+    if not host:
+        raise ValueError("ssh host is required")
+    destination = f"{options['user']}@{host}" if options.get("user") else str(host)
+    args = ["ssh"]
+    if port := options.get("port"):
+        args.extend(["-p", str(port)])
+    args.append(destination)
+    return args
+
+
 class CommandNamespace:
     def __init__(self, session: Session, immediate: bool) -> None:
         self._session = session
@@ -1582,6 +1828,14 @@ def console_lines(console: io.StringIO) -> list[str]:
 def to_json_value(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
         return value
+    if isinstance(value, CommandBuilder):
+        return {
+            "program": value.program,
+            "args": list(value.args),
+            "cwd": str(value.cwd) if value.cwd is not None else None,
+            "env": to_json_value(value.env_overrides),
+            "stdin": value.stdin,
+        }
     if isinstance(value, CommandResult):
         return {
             "stdout": value.stdout,

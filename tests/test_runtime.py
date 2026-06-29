@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -367,6 +368,86 @@ d.cleanup()
         self.assertEqual(result.stdout, "hello; echo hacked\n")
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.exit_code, 0)
+
+    def test_command_builder_returns_json_shape_from_session_evaluation(self):
+        value = self.eval("cli.echo('hello').in_('/tmp').env('X_TEST', '1').stdin_text('input')")["value"]
+
+        self.assertEqual(value, {
+            "program": "echo",
+            "args": ["hello"],
+            "cwd": "/tmp",
+            "env": {"X_TEST": "1"},
+            "stdin": "input",
+        })
+
+    def test_tool_command_wrappers_build_safe_commands(self):
+        code = """
+[
+    tools.sudo(cli.echo('hello')),
+    tools.browser.open('https://example.test'),
+    tools.browser.snapshot({'name': 'main', 'full_page': True}),
+    kubectl.get('pods', {'name': 'api', 'namespace': 'prod', 'selector': 'app=api'}),
+    tools.github.pr_view(12, {'json': ['number', 'title']}),
+    tools.github.prView(13),
+    tools.tmux.open('pyrun-test'),
+    tools.tmux.send('pyrun-test', 'echo hi'),
+    tools.tmux.capture('pyrun-test'),
+]
+"""
+        value = self.eval(code)["value"]
+
+        self.assertEqual(value[0]["program"], "authsudo")
+        self.assertEqual(value[0]["args"], ["echo", "hello"])
+        self.assertEqual(value[1], {"program": "browser-cli", "args": ["open", "https://example.test"], "cwd": None, "env": {}, "stdin": None})
+        self.assertEqual(value[2]["args"], ["snapshot", "--name", "main", "--full-page"])
+        self.assertEqual(value[3]["program"], "kubectl")
+        self.assertEqual(value[3]["args"], ["get", "pods", "api", "--namespace", "prod", "--selector", "app=api", "--output", "json"])
+        self.assertEqual(value[4]["args"], ["pr", "view", "12", "--json", "number,title"])
+        self.assertEqual(value[5]["args"], ["pr", "view", "13"])
+        self.assertEqual(value[6]["args"], ["new-session", "-d", "-s", "pyrun-test"])
+        self.assertEqual(value[7]["args"], ["send-keys", "-t", "pyrun-test", "echo hi", "Enter"])
+        self.assertEqual(value[8]["args"], ["capture-pane", "-p", "-t", "pyrun-test"])
+
+    def test_powershell_uses_utf16le_encoded_command(self):
+        value = self.eval("tools.powershell('Write-Output café', {'executable': 'powershell'})")["value"]
+
+        self.assertEqual(value["program"], "powershell")
+        self.assertEqual(value["args"][:2], ["-NoProfile", "-EncodedCommand"])
+        encoded = value["args"][2]
+        self.assertEqual(__import__('base64').b64decode(encoded).decode('utf-16le'), "Write-Output café")
+
+    def test_ssh_builds_sshpass_and_ssh_args_without_executing(self):
+        code = """
+remote = tools.ssh({'host': 'server.test', 'user': 'alice', 'port': 2222, 'password': 'secret'})
+[
+    remote.run(cli.echo('hello')),
+    remote.cli('uptime'),
+]
+"""
+        value = self.eval(code)["value"]
+
+        self.assertEqual(value[0]["program"], "sshpass")
+        self.assertEqual(value[0]["args"], ["-p", "secret", "ssh", "-p", "2222", "alice@server.test", "--", "echo", "hello"])
+        self.assertEqual(value[1]["args"], ["-p", "secret", "ssh", "-p", "2222", "alice@server.test", "--", "uptime"])
+
+    def test_git_status_runs_in_temp_repo_and_commit_builder_validates_message(self):
+        if not shutil.which("git"):
+            self.skipTest("git unavailable")
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run(["git", "init"], cwd=tmp, check=True, capture_output=True, text=True)
+            Path(tmp, "note.txt").write_text("hello\n")
+            status = self.eval(f"tools.git.status({{'cwd': {tmp!r}}})")["value"]
+            builder = self.eval(f"tools.git.build_commit({{'subject': 'Add note', 'body_lines': ['Details'], 'paths': ['note.txt'], 'cwd': {tmp!r}, 'no_verify': True}})")["value"]
+            bad = self.eval("tools.git.build_commit({'subject': 'Bad\\nsubject'})")
+
+        self.assertIn("##", status)
+        self.assertIn("?? note.txt", status)
+        self.assertEqual(builder["program"], "git")
+        self.assertEqual(builder["args"], ["commit", "--file", "-", "--no-verify", "--", "note.txt"])
+        self.assertEqual(builder["stdin"], "Add note\n\nDetails\n")
+        self.assertEqual(builder["cwd"], tmp)
+        self.assertEqual(bad["type"], "error")
+        self.assertIn("subject must be a single line", bad["error"])
 
     def test_fd_find_files_and_dirs_filter_from_session_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:

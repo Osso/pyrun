@@ -266,6 +266,62 @@ when the downstream command runs. Upstream non-zero exits do not raise by
 default; the downstream `CommandResult.upstream_results` tuple records upstream
 `stdout`, `stderr`, and `exit_code` evidence.
 
+## Hostrun Feature Parity
+
+| Hostrun feature area | Pyrun status | Notes and caveats |
+| --- | --- | --- |
+| Persistent sessions | Implemented | `SessionStore` keeps sessions keyed by `session_id`; omitted IDs use `default`. |
+| `ctx` scratch state | Implemented | Persistent dict-like object with attribute access. Python objects stay live in-process. |
+| Host cwd and `cd` | Implemented | `host.cwd()` and `host.cd(path)` persist per session; relative helpers resolve against that cwd. |
+| Filesystem helpers | Partial | Read/write/exists/remove/glob/open plus JSON, JSONL, CSV, TSV, TOML-read support. YAML is not supported with stdlib only. |
+| `tools.file.replace` / `patch` | Implemented | Exact replacement and unified-diff hunk application are present; deletion patches are rejected. |
+| Temporary files/directories | Implemented | `tmp.file()` and `tmp.dir()` create cleanup-capable handles; pending approval gates create/write/cleanup side effects. |
+| Command builder / `run` | Partial | `cli.<program>` and `run.<program>` use argv execution, cwd/env/stdin helpers, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
+| Spawn and pipeline helpers | Partial | `.spawn()` returns process handles; pipeline helpers are capture-then-feed composition, not OS pipe FD streaming. |
+| HTTP and sessions | Partial | Stdlib `urllib` request builders, response helpers, `to_file`, base URL, and shared headers exist. No retry, cookie jar, TLS option, or streaming support yet. |
+| `rg`, `fd`, and `sqlite` wrappers | Partial | Pure-Python subsets cover common search/discovery/query flows; they are not full CLI-compatible facades. |
+| `kubectl` wrapper | Implemented | Builds `kubectl get` argv with namespace, selector, all-namespaces, name, and output options. |
+| Tool wrappers | Partial | Thin builders exist for sudo/authsudo, PowerShell, SSH, browser-cli, git, GitHub, and tmux. They do not install/probe tools and most return builders until `.run()`/`.text()`/`.json()`. |
+| Structured helpers | Partial | `text`, `seq`, `obj`, and `hr(...)` cover common shaping operations. Python cannot patch builtins like Hostrun patches JS prototypes. |
+| JSONL adapter | Implemented | One JSON request per line, persistent sessions, validation errors, JSON-compatible helper serialization, default auto-approve. |
+| MCP stdio server | Implemented | Minimal `initialize`, `notifications/initialized`, `tools/list`, and `tools/call` with `pyrun_eval`. Default auto-approve. |
+| Approval mode | Partial | Library callers can choose pending approval; helper-mediated side effects return `needs_approval`. There is no approval resume protocol in JSONL/MCP yet. |
+| Sandboxing | Not implemented | Approval gating is not sandboxing. Arbitrary Python executes in-process unless an external sandbox/restriction is supplied. |
+| Docs and caveats | Partial | This prototype documents implemented slices and known gaps, but Hostrun remains the fuller reference surface. |
+
+## Sandbox and Approval Caveats
+
+Pyrun separates approval gating from sandboxing:
+
+- **Approval gating** is a helper-level policy. In pending mode, Pyrun helpers
+  such as `fs.write`, command `.run()`/`.spawn()`, HTTP execution, downloads,
+  temporary-file operations, and `tools.file.replace`/`patch` writes return a
+  `needs_approval` result instead of performing the side effect.
+- **Sandboxing** would be an OS/runtime boundary that prevents arbitrary user
+  code from reaching the host directly. Pyrun does not provide that boundary.
+
+Current stance:
+
+- The Python runtime evaluates arbitrary Python in-process in auto-approve mode.
+- Pending approval prevents helper-mediated side effects, but it is not a
+  security boundary. If arbitrary code can import stdlib modules or access
+  objects that expose `os`, `subprocess`, file descriptors, or network APIs, it
+  can bypass helper approval unless the caller also restricts or sandboxes the
+  execution environment.
+- The JSONL adapter and MCP stdio server default to auto-approve to match the
+  spawned `hostrun-mcp` style where the outer harness owns tool-call approval.
+  Library callers can still use `SessionStore.pending_approval()` when they need
+  helper-level intent collection.
+- Pyrun cannot safely sandbox arbitrary Python with only the standard library.
+
+Future sandbox options, none implemented yet:
+
+- run evaluations in a subprocess and destroy/recreate it after limits or denial;
+- restrict filesystem and process visibility with namespaces/seccomp/cgroups;
+- launch the subprocess under an external sandbox such as `bwrap`;
+- expose only explicit host capabilities across the process boundary and keep
+  arbitrary code away from host filesystem, process, and network authority.
+
 ## Differences from Hostrun
 
 - Runtime language is Python instead of QuickJS JavaScript.

@@ -427,6 +427,8 @@ d.cleanup()
         code = """
 [
     text.lines('a\\nb\\nc', 2, 3),
+    text.range('a\\nb\\nc', 2, 3),
+    text.range('a\\nb\\nc', 2),
     text.line_count('a\\nb\\nc'),
     text.word_count(' one two  three '),
     text.head('a\\nb\\nc', 2),
@@ -454,11 +456,13 @@ d.cleanup()
         result = self.eval(code)["value"]
 
         self.assertEqual(result[0], ["b", "c"])
-        self.assertEqual(result[1:19], [3, 3, ["a", "b"], ["b", "c"], ["a", "b", "c"], ["one", "two", "three"], "hi", "hi", "ONE two ONE", {"a": 1}, [{"a": 1}, {"a": 2}], [{"a": 1}, {"a": 2}], "hi", "HI", ["a", "b"], 2, 2, [195, 169]])
-        self.assertEqual(result[19], "a,b\n1,\n2,3\n")
-        self.assertEqual(result[20], "a\tb\n1\t2\n")
-        self.assertEqual(result[21], [{"a": "1", "b": "2"}])
-        self.assertEqual(result[22], [{"a": "1", "b": "2"}])
+        self.assertEqual(result[1], ["b", "c"])
+        self.assertEqual(result[2], ["b", "c"])
+        self.assertEqual(result[3:21], [3, 3, ["a", "b"], ["b", "c"], ["a", "b", "c"], ["one", "two", "three"], "hi", "hi", "ONE two ONE", {"a": 1}, [{"a": 1}, {"a": 2}], [{"a": 1}, {"a": 2}], "hi", "HI", ["a", "b"], 2, 2, [195, 169]])
+        self.assertEqual(result[21], "a,b\n1,\n2,3\n")
+        self.assertEqual(result[22], "a\tb\n1\t2\n")
+        self.assertEqual(result[23], [{"a": "1", "b": "2"}])
+        self.assertEqual(result[24], [{"a": "1", "b": "2"}])
 
     def test_seq_helpers_cover_filters_projections_and_aggregates(self):
         code = """
@@ -480,6 +484,7 @@ rows = [
     seq.last(rows),
     seq.take([1, 2, 3], 2),
     seq.tail([1, 2, 3], 2),
+    seq.tail([1, 2, 3], 0),
     seq.join_text(['a', 'b'], ','),
     seq.unique(['a', 'b', 'a']),
     seq.compact([0, 1, None, '', 'x', False]),
@@ -517,18 +522,18 @@ rows = [
         self.assertEqual(result[0:8], [['alpha'], ['beta'], ['beta'], ['alpha'], ['a1', 'b2'], ['bb'], ['a.py'], ['b.txt']])
         self.assertEqual(result[8], {'name': 'apple', 'kind': 'fruit', 'count': 2, 'meta': {'rank': 3}})
         self.assertEqual(result[9], {'name': 'kale', 'kind': 'veg', 'count': None, 'meta': {'rank': 2}})
-        self.assertEqual(result[10:18], [[1, 2], [2, 3], 'a,b', ['a', 'b'], [1, 'x'], ['fallback'], [{'id': 1}, {'id': 2}], [{'index': 0, 'value': 'a'}, {'index': 1, 'value': 'b'}]])
-        self.assertEqual(result[18:32], [True, True, True, True, 3, 2, 1, 3, [1.2, 5.7], [2, 3], ['a', 'b'], ['A', 'B'], [1, 2, 3], [3, 2, 1]])
-        self.assertEqual(result[32], [3, 1, 2])
-        self.assertEqual(result[33], ['apple', 'pear', 'kale'])
-        self.assertEqual(result[34], ['fruit', 'fruit', 'veg'])
-        self.assertEqual(result[35], [{'name': 'apple', 'count': 2}, {'name': 'pear', 'count': 4}, {'name': 'kale', 'count': None}])
-        self.assertEqual(result[36], [{'name': 'apple', 'kind': 'fruit', 'count': 2}, {'name': 'pear', 'kind': 'fruit', 'count': 4}, {'name': 'kale', 'kind': 'veg', 'count': None}])
-        self.assertEqual([row['name'] for row in result[37]], ['apple', 'pear'])
-        self.assertEqual([row['name'] for row in result[38]], ['pear'])
-        self.assertEqual(result[39], 'name,kind\napple,fruit\npear,fruit\nkale,veg\n')
-        self.assertEqual(result[40], 'name\tcount\napple\t2\n')
-        self.assertEqual(result[41], '{"name": "apple"}\n{"name": "pear"}\n{"name": "kale"}\n')
+        self.assertEqual(result[10:19], [[1, 2], [2, 3], [], 'a,b', ['a', 'b'], [1, 'x'], ['fallback'], [{'id': 1}, {'id': 2}], [{'index': 0, 'value': 'a'}, {'index': 1, 'value': 'b'}]])
+        self.assertEqual(result[19:33], [True, True, True, True, 3, 2, 1, 3, [1.2, 5.7], [2, 3], ['a', 'b'], ['A', 'B'], [1, 2, 3], [3, 2, 1]])
+        self.assertEqual(result[33], [3, 1, 2])
+        self.assertEqual(result[34], ['apple', 'pear', 'kale'])
+        self.assertEqual(result[35], ['fruit', 'fruit', 'veg'])
+        self.assertEqual(result[36], [{'name': 'apple', 'count': 2}, {'name': 'pear', 'count': 4}, {'name': 'kale', 'count': None}])
+        self.assertEqual(result[37], [{'name': 'apple', 'kind': 'fruit', 'count': 2}, {'name': 'pear', 'kind': 'fruit', 'count': 4}, {'name': 'kale', 'kind': 'veg', 'count': None}])
+        self.assertEqual([row['name'] for row in result[38]], ['apple', 'pear'])
+        self.assertEqual([row['name'] for row in result[39]], ['pear'])
+        self.assertEqual(result[40], 'name,kind\napple,fruit\npear,fruit\nkale,veg\n')
+        self.assertEqual(result[41], 'name\tcount\napple\t2\n')
+        self.assertEqual(result[42], '{"name": "apple"}\n{"name": "pear"}\n{"name": "kale"}\n')
 
     def test_obj_helpers_cover_projection_update_and_merge(self):
         code = """

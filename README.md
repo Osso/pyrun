@@ -103,7 +103,8 @@ Available globals:
   `{'rows_affected': n}`. `options.json=False` is accepted for parity planning,
   but this prototype still returns rows/dicts rather than formatted CLI text.
 - `text`: string helper namespace. Includes `lines(value, start=None, end=None)`
-  with 1-based inclusive ranges, `line_count`, `word_count`, `head`, `tail`,
+  with 1-based inclusive ranges, `range(value, start, end=None)` as an alias
+  for `lines`, `line_count`, `word_count`, `head`, `tail`,
   `split_row`, `split_words`, `trim`/`trimmed`, `replace_text`, `json`,
   `json_lines`/`jsonl`, `lower`, `upper`, `chars`, `bytes_count`/`byte_count`,
   `byte_array`, and `csv`/`tsv` for parsing delimited text or formatting rows.
@@ -207,6 +208,7 @@ sqlite.query('scratch.db', "INSERT INTO items (name) VALUES ('apple')")
 sqlite.query('scratch.db', 'SELECT id, name FROM items')
 
 text.lines('a\nb\nc', 2, 3)
+text.range('a\nb\nc', 2)
 text.json_lines('{"a":1}\n{"a":2}\n')
 seq.where([{'kind': 'fruit'}, {'kind': 'veg'}], {'kind': 'fruit'})
 seq.select([{'name': 'apple', 'count': 2}], 'name')

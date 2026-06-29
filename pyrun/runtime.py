@@ -32,6 +32,9 @@ class TextNamespace:
         last = len(lines) if end is None else end
         return lines[max(first - 1, 0):last]
 
+    def range(self, value: Any, start: int, end: int | None = None) -> list[str]:
+        return self.lines(value, start, end)
+
     def line_count(self, value: Any) -> int:
         return len(str(value).splitlines())
 
@@ -133,6 +136,8 @@ class SeqNamespace:
         return self.take(values, count)
 
     def tail(self, values: list[Any], count: int = 10) -> list[Any]:
+        if count <= 0:
+            return []
         return values[-count:]
 
     def join_text(self, values: list[Any], separator: str = "\n") -> str:

@@ -197,12 +197,32 @@ class LocalHttpHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"hello")
 
     def do_POST(self):
+        self.send_json_echo()
+
+    def do_PUT(self):
+        self.send_json_echo()
+
+    def do_PATCH(self):
+        self.send_json_echo()
+
+    def do_DELETE(self):
+        self.send_response(204)
+        self.send_header("X-Deleted", "yes")
+        self.end_headers()
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("X-Head", "yes")
+        self.end_headers()
+
+    def send_json_echo(self):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length).decode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        payload = {"content_type": self.headers.get("Content-Type"), "body": body}
+        payload = {"method": self.command, "content_type": self.headers.get("Content-Type"), "body": body}
         self.wfile.write(json.dumps(payload).encode())
 
     def log_message(self, format, *args):
@@ -247,11 +267,30 @@ class HttpTests(unittest.TestCase):
             to_file = self.eval(f"http.get({self.base_url + '/text'!r}).to_file({str(target)!r})") ["value"]
             saved = target.read_text()
 
-        self.assertEqual(json_echo, {"content_type": "application/json", "body": '{"a": 1}'})
-        self.assertEqual(form_echo, {"content_type": "application/x-www-form-urlencoded", "body": "a=1&b=two"})
-        self.assertEqual(body_echo, {"content_type": "text/plain", "body": "raw"})
+        self.assertEqual(json_echo, {"method": "POST", "content_type": "application/json", "body": '{"a": 1}'})
+        self.assertEqual(form_echo, {"method": "POST", "content_type": "application/x-www-form-urlencoded", "body": "a=1&b=two"})
+        self.assertEqual(body_echo, {"method": "POST", "content_type": "text/plain", "body": "raw"})
         self.assertEqual(to_file, str(target))
         self.assertEqual(saved, "hello")
+
+    def test_http_put_patch_and_delete_helpers(self):
+        put_echo = self.eval(f"http.put({self.base_url + '/echo'!r}, {{'json': {{'a': 1}}}}).json()") ["value"]
+        patch_echo = self.eval(f"http.patch({self.base_url + '/echo'!r}, {{'body': 'patched', 'headers': {{'Content-Type': 'text/plain'}}}}).json()") ["value"]
+        deleted = self.eval(f"http.delete({self.base_url + '/resource'!r}).run()") ["value"]
+
+        self.assertEqual(put_echo, {"method": "PUT", "content_type": "application/json", "body": '{"a": 1}'})
+        self.assertEqual(patch_echo, {"method": "PATCH", "content_type": "text/plain", "body": "patched"})
+        self.assertEqual(deleted["status"], 204)
+        self.assertEqual(deleted["headers"]["X-Deleted"], "yes")
+        self.assertEqual(deleted["body"], [])
+
+    def test_http_head_helper_returns_headers_without_body(self):
+        response = self.eval(f"http.head({self.base_url + '/text'!r}).run()") ["value"]
+
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(response["headers"]["Content-Type"], "text/plain")
+        self.assertEqual(response["headers"]["X-Head"], "yes")
+        self.assertEqual(response["body"], [])
 
 
 class JsonlRunnerTests(unittest.TestCase):

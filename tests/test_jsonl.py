@@ -100,6 +100,66 @@ class JsonlProtocolTests(unittest.TestCase):
         self.assertEqual(result["type"], "error")
         self.assertIn("name 'pi' is not defined", result["error"])
 
+    def test_pi_agent_selection_requests_roundtrip_through_jsonl_subprocess(self):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pyrun.jsonl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(json.dumps({
+                "code": "[pi.agents.current(), pi.agents.select('agent-1'), pi.messages.last()]",
+                "pi": {"footer": {"cwd": "/repo"}},
+                "pi_bridge": True,
+            }) + "\n")
+            process.stdin.flush()
+
+            current_request = json.loads(process.stdout.readline())
+            self.assertEqual(current_request, {
+                "type": "pi_request",
+                "method": "agents.current",
+                "params": None,
+            })
+            process.stdin.write(json.dumps({"result": {"id": "main", "displayName": "Main thread"}}) + "\n")
+            process.stdin.flush()
+
+            select_request = json.loads(process.stdout.readline())
+            self.assertEqual(select_request, {
+                "type": "pi_request",
+                "method": "agents.select",
+                "params": {"agentId": "agent-1"},
+            })
+            process.stdin.write(json.dumps({"result": {"id": "agent-1", "displayName": "Scout"}}) + "\n")
+            process.stdin.flush()
+
+            last_message_request = json.loads(process.stdout.readline())
+            self.assertEqual(last_message_request, {
+                "type": "pi_request",
+                "method": "messages.last",
+                "params": None,
+            })
+            process.stdin.write(json.dumps({"result": {"entryId": "entry-1", "role": "assistant", "text": "done"}}) + "\n")
+            process.stdin.flush()
+            result = json.loads(process.stdout.readline())
+
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(result["value"], [
+                {"id": "main", "displayName": "Main thread"},
+                {"id": "agent-1", "displayName": "Scout"},
+                {"entryId": "entry-1", "role": "assistant", "text": "done"},
+            ])
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=5)
+
     def test_pi_request_roundtrip_through_jsonl_subprocess(self):
         process = subprocess.Popen(
             [sys.executable, "-m", "pyrun.jsonl"],

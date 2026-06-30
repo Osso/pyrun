@@ -1921,6 +1921,12 @@ class PiAgents:
     def list(self, params: Any = None) -> Any:
         return self._request_handler("agents.list", params)
 
+    def current(self) -> Any:
+        return self._request_handler("agents.current", None)
+
+    def select(self, agent_id: str) -> Any:
+        return self._request_handler("agents.select", {"agentId": agent_id})
+
 
 class PiMessages:
     def __init__(self, request_handler: PiRequestHandler) -> None:
@@ -1928,6 +1934,9 @@ class PiMessages:
 
     def enqueue(self, params: Any) -> Any:
         return self._request_handler("messages.enqueue", params)
+
+    def last(self) -> Any:
+        return self._request_handler("messages.last", None)
 
 
 class PiBridge:

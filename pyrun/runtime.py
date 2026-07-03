@@ -2021,7 +2021,85 @@ class SessionStore:
         return self._sessions[session_id]
 
 
+DIRECT_PROCESS_MODULES = {"subprocess"}
+DIRECT_PROCESS_OS_CALLS = {"system", "popen"}
+DIRECT_PROCESS_OS_PREFIXES = ("exec", "spawn")
+DIRECT_PROCESS_GUIDANCE = "Use cli.<program>(*args).run() or run.<program>(*args) instead of direct process execution."
+
+
+class DirectProcessExecutionVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.subprocess_aliases: set[str] = set()
+        self.os_aliases: set[str] = set()
+        self.imported_process_functions: dict[str, str] = {}
+        self.violations: list[str] = []
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            root_name = alias.name.split(".", 1)[0]
+            local_name = alias.asname or root_name
+            if root_name in DIRECT_PROCESS_MODULES:
+                self.subprocess_aliases.add(local_name)
+            elif root_name == "os":
+                self.os_aliases.add(local_name)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module == "subprocess":
+            for alias in node.names:
+                local_name = alias.asname or alias.name
+                self.imported_process_functions[local_name] = f"subprocess.{alias.name}"
+        elif node.module == "os":
+            for alias in node.names:
+                if is_direct_os_process_call(alias.name):
+                    local_name = alias.asname or alias.name
+                    self.imported_process_functions[local_name] = f"os.{alias.name}"
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        call_name = direct_process_call_name(node.func, self.subprocess_aliases, self.os_aliases, self.imported_process_functions)
+        if call_name is not None:
+            self.violations.append(call_name)
+        self.generic_visit(node)
+
+
+def reject_direct_process_execution(code: str) -> None:
+    try:
+        module = ast.parse(code, mode="exec")
+    except SyntaxError:
+        return
+    visitor = DirectProcessExecutionVisitor()
+    visitor.visit(module)
+    if visitor.violations:
+        call_name = visitor.violations[0]
+        raise ValueError(f"Direct process execution via {call_name} is not allowed in pyrun_eval. {DIRECT_PROCESS_GUIDANCE}")
+
+
+def direct_process_call_name(
+    func: ast.expr,
+    subprocess_aliases: set[str],
+    os_aliases: set[str],
+    imported_process_functions: dict[str, str],
+) -> str | None:
+    if isinstance(func, ast.Name):
+        return imported_process_functions.get(func.id)
+    if not isinstance(func, ast.Attribute):
+        return None
+    owner = func.value
+    if isinstance(owner, ast.Name):
+        if owner.id in subprocess_aliases:
+            return f"subprocess.{func.attr}"
+        if owner.id in os_aliases and is_direct_os_process_call(func.attr):
+            return f"os.{func.attr}"
+    return None
+
+
+def is_direct_os_process_call(name: str) -> bool:
+    return name in DIRECT_PROCESS_OS_CALLS or name.startswith(DIRECT_PROCESS_OS_PREFIXES)
+
+
 def evaluate_python(code: str, globals_map: dict[str, Any]) -> Any:
+    reject_direct_process_execution(code)
     try:
         compiled = compile(code, "<pyrun>", "eval")
     except SyntaxError:

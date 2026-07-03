@@ -87,6 +87,61 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(result["approval"]["args"]["program"], "python3")
             self.assertFalse(target.exists())
 
+    def test_direct_subprocess_execution_is_rejected_with_cli_guidance(self):
+        code = """
+import subprocess
+subprocess.run(['python3', '-c', 'print(123)'])
+"""
+        result = self.eval(code)
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn("Use cli.<program>(*args)", result["error"])
+        self.assertIn("subprocess.run", result["error"])
+
+    def test_direct_process_execution_rejects_aliases_and_os_escapes(self):
+        cases = {
+            "subprocess alias": ("import subprocess as sp\nsp.Popen(['python3'])", "subprocess.Popen"),
+            "from subprocess import": ("from subprocess import run\nrun(['python3'])", "subprocess.run"),
+            "os system": ("import os\nos.system('python3 --version')", "os.system"),
+            "from os import spawn": ("from os import spawnv\nspawnv(0, 'python3', ['python3'])", "os.spawnv"),
+        }
+
+        for name, (code, call_name) in cases.items():
+            with self.subTest(name=name):
+                result = self.eval(code)
+
+                self.assertEqual(result["type"], "error")
+                self.assertIn(call_name, result["error"])
+
+    def test_library_subprocess_execution_is_allowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = Path(tmp, "helper_using_subprocess.py")
+            module.write_text(
+                """
+import sys
+import subprocess
+
+
+def run_child():
+    return subprocess.run(
+        [sys.executable, '-c', 'print(123)'],
+        text=True,
+        capture_output=True,
+        check=False,
+    ).stdout.strip()
+"""
+            )
+            code = f"""
+import sys
+sys.path.insert(0, {tmp!r})
+import helper_using_subprocess
+helper_using_subprocess.run_child()
+"""
+            result = self.eval(code)
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], "123")
+
     def test_pending_approval_read_only_fs_and_ctx_still_work(self):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "note.txt").write_text("hello")

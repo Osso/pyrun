@@ -432,6 +432,7 @@ class Session:
     ctx: AttrDict = field(default_factory=AttrDict)
     auto_approve: bool = True
     approval_counter: int = 0
+    command_history: list[CommandResult] = field(default_factory=list)
 
     def build_globals(self, pi: Any | None = None) -> dict[str, Any]:
         host = Host(self)
@@ -2103,20 +2104,36 @@ class CommandNamespace:
     def __getattr__(self, program: str) -> Any:
         command = CommandBuilder(self._session, program.replace("_", "-"))
         if self._immediate:
-            return ImmediateCommand(command)
+            return ImmediateCommand(self._session, command)
         return command
+
+    def history(self) -> list[CommandResult]:
+        return list(self._session.command_history)
+
+    def last(self, index: int = -1) -> CommandResult:
+        try:
+            return self._session.command_history[index]
+        except IndexError as exc:
+            raise IndexError("no previous command results are available") from exc
 
 
 class ImmediateCommand:
-    def __init__(self, command: CommandBuilder) -> None:
+    def __init__(self, session: Session, command: CommandBuilder) -> None:
+        self._session = session
         self._command = command
 
     def __call__(self, *args: object) -> CommandResult:
         result = self._command(*args).run()
-        sys.stdout.write(result.stdout)
-        sys.stdout.write(result.stderr)
+        self._session.command_history.append(result)
+        sys.stdout.write(tail_command_output(result))
         sys.stdout.flush()
         return result
+
+
+def tail_command_output(result: CommandResult, line_limit: int = 300) -> str:
+    text_output = result.stdout + result.stderr
+    lines = text_output.splitlines(keepends=True)
+    return "".join(lines[-line_limit:])
 
 
 PiRequestHandler = Callable[[str, Any], Any]

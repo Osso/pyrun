@@ -229,8 +229,11 @@ Available globals:
   instead. Wrapper values are unwrapped during JSONL result conversion.
 - `run.<program>(*args)`: preferred helper for routine command execution. It uses
   argv-style execution with no shell parsing and returns a `CommandResult`
-  directly. Command names are resolved dynamically via attribute access, so
-  `dir(run)` may be empty even when `run.niri(...)` or another command works.
+  directly. Visible console output is capped to the last 300 lines by default;
+  full logs stay available on the returned `CommandResult` and through
+  `run.last()` / `run.history()`. Command names are resolved dynamically via
+  attribute access, so `dir(run)` may be empty even when `run.niri(...)` or
+  another command works.
 - `cli.<program>(*args)`: advanced command-builder helper. Use it when you need
   capture helpers, piping, cwd/env/stdin configuration, streams, spawning,
   redirects, or inspection. Returning a builder from JSONL/session evaluation
@@ -253,6 +256,18 @@ run.python3('-c', 'print(123)')
 run.python3('-c', 'print(123)').text()
 run.python3('-c', 'print(123)').lines()
 run.python3('-c', 'import json; print(json.dumps({"ok": True}))').json()
+```
+
+Do not rerun a command just to recover output hidden by the 300-line display cap.
+Use the existing `CommandResult` instead:
+
+```python
+result = run.pytest('-q')
+result.stdout
+result.stderr
+run.last().stdout
+run.last().stderr
+run.history()[-2].stdout
 ```
 
 Use `cli` when you need command-builder features:

@@ -385,6 +385,23 @@ d.cleanup()
         self.assertEqual(result["value"]["stdout"], "OUT\n")
         self.assertEqual(result["value"]["stderr"], "ERR\n")
 
+    def test_run_namespace_console_shows_only_last_300_lines(self):
+        code = "for i in range(305): print(f'line-{i}')"
+
+        result = self.eval(f"run.python3('-c', {code!r})")
+
+        self.assertEqual(len(result["console"]), 300)
+        self.assertEqual(result["console"][0], "line-5")
+        self.assertEqual(result["console"][-1], "line-304")
+        self.assertIn("line-0\n", result["value"]["stdout"])
+
+    def test_run_namespace_keeps_full_previous_run_logs(self):
+        self.eval("run.python3('-c', 'print(\"saved-out\")')")
+
+        result = self.eval("run.last().stdout")
+
+        self.assertEqual(result["value"], "saved-out\n")
+
     def test_command_result_helpers(self):
         lines = self.eval("run.python3('-c', 'print(1); print(2)').lines()")["value"]
         data = self.eval(

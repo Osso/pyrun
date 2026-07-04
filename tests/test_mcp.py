@@ -38,10 +38,14 @@ class McpHandlerTests(unittest.TestCase):
         self.assertIn("ctx", tool["description"])
         self.assertEqual(tool["inputSchema"]["required"], ["code"])
         self.assertEqual(tool["inputSchema"]["properties"]["code"]["type"], "string")
-        self.assertEqual(tool["inputSchema"]["properties"]["session_id"]["type"], "string")
+        self.assertEqual(
+            tool["inputSchema"]["properties"]["session_id"]["type"], "string"
+        )
 
     def test_tools_call_evaluates_and_returns_text_and_structured_content(self):
-        response = self.request("tools/call", {"name": "pyrun_eval", "arguments": {"code": "1 + 2"}})
+        response = self.request(
+            "tools/call", {"name": "pyrun_eval", "arguments": {"code": "1 + 2"}}
+        )
         result = response["result"]
 
         self.assertFalse(result["isError"])
@@ -51,15 +55,33 @@ class McpHandlerTests(unittest.TestCase):
         self.assertIn("\n", pretty)
 
     def test_tools_call_persists_named_session(self):
-        first = self.request("tools/call", {"name": "pyrun_eval", "arguments": {"session_id": "s", "code": "ctx.count = 41"}}, 1)
-        second = self.request("tools/call", {"name": "pyrun_eval", "arguments": {"session_id": "s", "code": "ctx.count + 1"}}, 2)
+        first = self.request(
+            "tools/call",
+            {
+                "name": "pyrun_eval",
+                "arguments": {"session_id": "s", "code": "ctx.count = 41"},
+            },
+            1,
+        )
+        second = self.request(
+            "tools/call",
+            {
+                "name": "pyrun_eval",
+                "arguments": {"session_id": "s", "code": "ctx.count + 1"},
+            },
+            2,
+        )
 
         self.assertFalse(first["result"]["isError"])
         self.assertEqual(second["result"]["structuredContent"]["result"]["value"], 42)
 
     def test_tools_call_unknown_tool_and_invalid_params_are_tool_errors(self):
-        unknown = self.request("tools/call", {"name": "missing", "arguments": {"code": "1"}})
-        invalid = self.request("tools/call", {"name": "pyrun_eval", "arguments": {"code": 1}})
+        unknown = self.request(
+            "tools/call", {"name": "missing", "arguments": {"code": "1"}}
+        )
+        invalid = self.request(
+            "tools/call", {"name": "pyrun_eval", "arguments": {"code": 1}}
+        )
 
         self.assertTrue(unknown["result"]["isError"])
         self.assertIn("unknown tool", unknown["result"]["content"][0]["text"])
@@ -67,7 +89,11 @@ class McpHandlerTests(unittest.TestCase):
         self.assertIn("code must be a string", invalid["result"]["content"][0]["text"])
 
     def test_initialized_notification_returns_no_response(self):
-        self.assertIsNone(self.server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"}))
+        self.assertIsNone(
+            self.server.handle(
+                {"jsonrpc": "2.0", "method": "notifications/initialized"}
+            )
+        )
 
     def test_default_server_store_auto_approves_side_effects(self):
         from pyrun.mcp import McpServer
@@ -75,12 +101,17 @@ class McpHandlerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp, "note.txt")
             server = McpServer()
-            response = server.handle({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": "pyrun_eval", "arguments": {"code": f"fs.write({str(target)!r}, 'hello')"}},
-            })
+            response = server.handle(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "pyrun_eval",
+                        "arguments": {"code": f"fs.write({str(target)!r}, 'hello')"},
+                    },
+                }
+            )
 
             result = response["result"]["structuredContent"]["result"]
             self.assertEqual(result["type"], "completed")

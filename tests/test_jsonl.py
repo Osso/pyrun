@@ -43,8 +43,10 @@ class JsonlProtocolTests(unittest.TestCase):
         self.assertIn("session_id must be a string", response["error"])
 
     def test_helper_outputs_are_json_serializable(self):
-        result = self.handle(json.dumps({
-            "code": """
+        result = self.handle(
+            json.dumps(
+                {
+                    "code": """
 [
     cli.python3('-c', 'print(123)'),
     cli.python3('-c', 'print(123)').stdout_stream(),
@@ -53,7 +55,9 @@ class JsonlProtocolTests(unittest.TestCase):
     {'wrapped': hr({'a': 1}).select('a')},
 ]
 """
-        }))
+                }
+            )
+        )
 
         self.assertEqual(result["type"], "completed")
         json.dumps(result)
@@ -67,17 +71,23 @@ class JsonlProtocolTests(unittest.TestCase):
     def test_jsonl_store_defaults_to_auto_approve_for_side_effects(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp, "note.txt")
-            result = self.handle(json.dumps({"code": f"fs.write({str(target)!r}, 'hello')"}))
+            result = self.handle(
+                json.dumps({"code": f"fs.write({str(target)!r}, 'hello')"})
+            )
 
             self.assertEqual(result["type"], "completed")
             self.assertEqual(target.read_text(), "hello")
 
     def test_pi_footer_snapshot_uses_provided_snapshot(self):
-        result = self.handle(json.dumps({
-            "code": "pi.footer.snapshot()",
-            "pi": {"footer": {"cwd": "/repo", "model": "test/model"}},
-            "pi_bridge": True,
-        }))
+        result = self.handle(
+            json.dumps(
+                {
+                    "code": "pi.footer.snapshot()",
+                    "pi": {"footer": {"cwd": "/repo", "model": "test/model"}},
+                    "pi_bridge": True,
+                }
+            )
+        )
 
         self.assertEqual(result["type"], "error")
         self.assertIn("pi_bridge requires a Pi request handler", result["error"])
@@ -111,47 +121,80 @@ class JsonlProtocolTests(unittest.TestCase):
         assert process.stdin is not None
         assert process.stdout is not None
         try:
-            process.stdin.write(json.dumps({
-                "code": "[pi.agents.current(), pi.agents.select('agent-1'), pi.messages.last()]",
-                "pi": {"footer": {"cwd": "/repo"}},
-                "pi_bridge": True,
-            }) + "\n")
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "code": "[pi.agents.current(), pi.agents.select('agent-1'), pi.messages.last()]",
+                        "pi": {"footer": {"cwd": "/repo"}},
+                        "pi_bridge": True,
+                    }
+                )
+                + "\n"
+            )
             process.stdin.flush()
 
             current_request = json.loads(process.stdout.readline())
-            self.assertEqual(current_request, {
-                "type": "pi_request",
-                "method": "agents.current",
-                "params": None,
-            })
-            process.stdin.write(json.dumps({"result": {"id": "main", "displayName": "Main thread"}}) + "\n")
+            self.assertEqual(
+                current_request,
+                {
+                    "type": "pi_request",
+                    "method": "agents.current",
+                    "params": None,
+                },
+            )
+            process.stdin.write(
+                json.dumps({"result": {"id": "main", "displayName": "Main thread"}})
+                + "\n"
+            )
             process.stdin.flush()
 
             select_request = json.loads(process.stdout.readline())
-            self.assertEqual(select_request, {
-                "type": "pi_request",
-                "method": "agents.select",
-                "params": {"agentId": "agent-1"},
-            })
-            process.stdin.write(json.dumps({"result": {"id": "agent-1", "displayName": "Scout"}}) + "\n")
+            self.assertEqual(
+                select_request,
+                {
+                    "type": "pi_request",
+                    "method": "agents.select",
+                    "params": {"agentId": "agent-1"},
+                },
+            )
+            process.stdin.write(
+                json.dumps({"result": {"id": "agent-1", "displayName": "Scout"}}) + "\n"
+            )
             process.stdin.flush()
 
             last_message_request = json.loads(process.stdout.readline())
-            self.assertEqual(last_message_request, {
-                "type": "pi_request",
-                "method": "messages.last",
-                "params": None,
-            })
-            process.stdin.write(json.dumps({"result": {"entryId": "entry-1", "role": "assistant", "text": "done"}}) + "\n")
+            self.assertEqual(
+                last_message_request,
+                {
+                    "type": "pi_request",
+                    "method": "messages.last",
+                    "params": None,
+                },
+            )
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "result": {
+                            "entryId": "entry-1",
+                            "role": "assistant",
+                            "text": "done",
+                        }
+                    }
+                )
+                + "\n"
+            )
             process.stdin.flush()
             result = json.loads(process.stdout.readline())
 
             self.assertEqual(result["type"], "completed")
-            self.assertEqual(result["value"], [
-                {"id": "main", "displayName": "Main thread"},
-                {"id": "agent-1", "displayName": "Scout"},
-                {"entryId": "entry-1", "role": "assistant", "text": "done"},
-            ])
+            self.assertEqual(
+                result["value"],
+                [
+                    {"id": "main", "displayName": "Main thread"},
+                    {"id": "agent-1", "displayName": "Scout"},
+                    {"entryId": "entry-1", "role": "assistant", "text": "done"},
+                ],
+            )
         finally:
             process.stdin.close()
             process.stdout.close()
@@ -171,21 +214,31 @@ class JsonlProtocolTests(unittest.TestCase):
         assert process.stdin is not None
         assert process.stdout is not None
         try:
-            process.stdin.write(json.dumps({
-                "code": "pi.agents.wait('agent-1')",
-                "pi": {"footer": {"cwd": "/repo"}},
-                "pi_bridge": True,
-            }) + "\n")
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "code": "pi.agents.wait('agent-1')",
+                        "pi": {"footer": {"cwd": "/repo"}},
+                        "pi_bridge": True,
+                    }
+                )
+                + "\n"
+            )
             process.stdin.flush()
 
             request = json.loads(process.stdout.readline())
-            self.assertEqual(request, {
-                "type": "pi_request",
-                "method": "agents.wait",
-                "params": {"agentId": "agent-1"},
-            })
+            self.assertEqual(
+                request,
+                {
+                    "type": "pi_request",
+                    "method": "agents.wait",
+                    "params": {"agentId": "agent-1"},
+                },
+            )
 
-            process.stdin.write(json.dumps({"result": {"id": "agent-1", "status": "done"}}) + "\n")
+            process.stdin.write(
+                json.dumps({"result": {"id": "agent-1", "status": "done"}}) + "\n"
+            )
             process.stdin.flush()
             result = json.loads(process.stdout.readline())
 
@@ -210,7 +263,9 @@ class JsonlProtocolTests(unittest.TestCase):
         assert process.stdin is not None
         assert process.stdout is not None
         try:
-            process.stdin.write(json.dumps({"code": "pi.compact()", "pi": {}, "pi_bridge": True}) + "\n")
+            process.stdin.write(
+                json.dumps({"code": "pi.compact()", "pi": {}, "pi_bridge": True}) + "\n"
+            )
             process.stdin.flush()
             self.assertEqual(json.loads(process.stdout.readline())["method"], "compact")
 

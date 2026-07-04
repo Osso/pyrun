@@ -18,8 +18,14 @@ TOOL_DESCRIPTION = (
 TOOL_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "session_id": {"type": "string", "description": "Optional persistent Pyrun session id."},
-        "code": {"type": "string", "description": "Python code to evaluate synchronously."},
+        "session_id": {
+            "type": "string",
+            "description": "Optional persistent Pyrun session id.",
+        },
+        "code": {
+            "type": "string",
+            "description": "Python code to evaluate synchronously.",
+        },
     },
     "required": ["code"],
     "additionalProperties": False,
@@ -35,7 +41,9 @@ class McpServer:
         if method == "notifications/initialized":
             return None
         if method == "initialize":
-            return self._response(request, self._initialize_result(request.get("params")))
+            return self._response(
+                request, self._initialize_result(request.get("params"))
+            )
         if method == "tools/list":
             return self._response(request, {"tools": [tool_definition()]})
         if method == "tools/call":
@@ -58,14 +66,24 @@ class McpServer:
             return tool_error(error)
         assert isinstance(params, dict)
         arguments = params["arguments"]
-        result = self.store.evaluate(arguments["code"], session_id=arguments.get("session_id", "default"))
+        result = self.store.evaluate(
+            arguments["code"], session_id=arguments.get("session_id", "default")
+        )
         return tool_result(result)
 
-    def _response(self, request: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    def _response(
+        self, request: dict[str, Any], result: dict[str, Any]
+    ) -> dict[str, Any]:
         return {"jsonrpc": "2.0", "id": request.get("id"), "result": result}
 
-    def _error(self, request: dict[str, Any], code: int, message: str) -> dict[str, Any]:
-        return {"jsonrpc": "2.0", "id": request.get("id"), "error": {"code": code, "message": message}}
+    def _error(
+        self, request: dict[str, Any], code: int, message: str
+    ) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": request.get("id"),
+            "error": {"code": code, "message": message},
+        }
 
 
 def tool_definition() -> dict[str, Any]:

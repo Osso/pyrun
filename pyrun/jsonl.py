@@ -37,26 +37,50 @@ def handle_line(
     try:
         request = json.loads(line)
     except json.JSONDecodeError as exc:
-        return {"type": "error", "executed": "", "error": f"line {line_number}: invalid JSON: {exc}"}
+        return {
+            "type": "error",
+            "executed": "",
+            "error": f"line {line_number}: invalid JSON: {exc}",
+        }
     if not isinstance(request, dict):
-        return {"type": "error", "executed": "", "error": f"line {line_number}: request must be an object"}
+        return {
+            "type": "error",
+            "executed": "",
+            "error": f"line {line_number}: request must be an object",
+        }
     code = request.get("code")
     if not isinstance(code, str):
-        return {"type": "error", "executed": "", "error": f"line {line_number}: code must be a string"}
+        return {
+            "type": "error",
+            "executed": "",
+            "error": f"line {line_number}: code must be a string",
+        }
     session_id = request.get("session_id", "default")
     if not isinstance(session_id, str):
-        return {"type": "error", "executed": code, "error": f"line {line_number}: session_id must be a string"}
+        return {
+            "type": "error",
+            "executed": code,
+            "error": f"line {line_number}: session_id must be a string",
+        }
     pi_bridge = request.get("pi_bridge", False)
     if not isinstance(pi_bridge, bool):
-        return {"type": "error", "executed": code, "error": f"line {line_number}: pi_bridge must be a boolean"}
+        return {
+            "type": "error",
+            "executed": code,
+            "error": f"line {line_number}: pi_bridge must be a boolean",
+        }
     try:
-        return to_json_value(store.evaluate(
-            code,
-            session_id=session_id,
-            pi=request.get("pi"),
-            pi_bridge=pi_bridge,
-            pi_request_handler=create_pi_request_handler(stdin, stdout) if pi_bridge else None,
-        ))
+        return to_json_value(
+            store.evaluate(
+                code,
+                session_id=session_id,
+                pi=request.get("pi"),
+                pi_bridge=pi_bridge,
+                pi_request_handler=create_pi_request_handler(stdin, stdout)
+                if pi_bridge
+                else None,
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - protocol errors are returned to JSONL caller.
         return {"type": "error", "executed": code, "error": str(exc)}
 
@@ -66,7 +90,13 @@ def create_pi_request_handler(stdin: TextIO | None, stdout: TextIO | None):
         return None
 
     def request(method: str, params: Any) -> Any:
-        stdout.write(json.dumps({"type": "pi_request", "method": method, "params": params}, separators=(",", ":")) + "\n")
+        stdout.write(
+            json.dumps(
+                {"type": "pi_request", "method": method, "params": params},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
         stdout.flush()
         line = stdin.readline()
         if line == "":

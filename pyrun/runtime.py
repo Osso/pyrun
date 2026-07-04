@@ -15,6 +15,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
@@ -26,13 +27,15 @@ from typing import Any
 
 
 class TextNamespace:
-    def lines(self, value: Any, start: int | None = None, end: int | None = None) -> list[str]:
+    def lines(
+        self, value: Any, start: int | None = None, end: int | None = None
+    ) -> list[str]:
         lines = str(value).splitlines()
         if start is None and end is None:
             return lines
         first = 1 if start is None else start
         last = first if end is None else end
-        return lines[max(first - 1, 0):last]
+        return lines[max(first - 1, 0) : last]
 
     def range(self, value: Any, start: int, end: int | None = None) -> list[str]:
         return self.lines(value, start, end)
@@ -162,7 +165,10 @@ class SeqNamespace:
         return [{name: value} for value in values]
 
     def enumerate(self, values: list[Any]) -> list[dict[str, Any]]:
-        return [{"index": index, "item": value} for index, value in builtins.enumerate(values)]
+        return [
+            {"index": index, "item": value}
+            for index, value in builtins.enumerate(values)
+        ]
 
     def is_empty(self, values: list[Any]) -> bool:
         return len(values) == 0
@@ -209,7 +215,11 @@ class SeqNamespace:
         return builtins.round(numeric, digits)
 
     def _numeric_values(self, values: list[Any]) -> list[int | float]:
-        return [numeric for value in values if (numeric := self._coerce_number(value)) is not None]
+        return [
+            numeric
+            for value in values
+            if (numeric := self._coerce_number(value)) is not None
+        ]
 
     def _coerce_number(self, value: Any) -> int | float | None:
         if isinstance(value, bool) or value is None:
@@ -285,7 +295,9 @@ class ObjNamespace:
     def insert(self, value: dict[Any, Any], key: str, item: Any) -> dict[str, Any]:
         return {**value, key: item}
 
-    def update(self, value: dict[Any, Any], key: str, value_or_fn: Any) -> dict[str, Any]:
+    def update(
+        self, value: dict[Any, Any], key: str, value_or_fn: Any
+    ) -> dict[str, Any]:
         item = value_or_fn(value.get(key)) if callable(value_or_fn) else value_or_fn
         return {**value, key: item}
 
@@ -367,7 +379,9 @@ def reject_fields(value: dict[Any, Any], fields: tuple[str, ...]) -> dict[str, A
 
 
 def matches_filter(value: Any, expected: dict[str, Any]) -> bool:
-    return builtins.all(get_path(value, path) == item for path, item in expected.items())
+    return builtins.all(
+        get_path(value, path) == item for path, item in expected.items()
+    )
 
 
 class AttrDict(dict):
@@ -450,12 +464,14 @@ class Session:
         if self.auto_approve:
             return
         self.approval_counter += 1
-        raise ApprovalRequired({
-            "id": f"approval-{self.approval_counter}",
-            "tool": tool,
-            "summary": summary,
-            "args": to_json_value(args),
-        })
+        raise ApprovalRequired(
+            {
+                "id": f"approval-{self.approval_counter}",
+                "tool": tool,
+                "summary": summary,
+                "args": to_json_value(args),
+            }
+        )
 
 
 class Host:
@@ -492,7 +508,9 @@ class FileSystem:
         write_text_file(target, content)
         return True
 
-    def write_json(self, path: str | os.PathLike[str], value: Any, indent: int = 2) -> bool:
+    def write_json(
+        self, path: str | os.PathLike[str], value: Any, indent: int = 2
+    ) -> bool:
         return self.write(path, json.dumps(value, indent=indent) + "\n")
 
     def write_json_lines(self, path: str | os.PathLike[str], values: list[Any]) -> bool:
@@ -516,7 +534,9 @@ class FileSystem:
 
     def remove(self, path: str | os.PathLike[str]) -> bool:
         target = self._resolve(path)
-        self._session.require_approval("fs.remove", f"Remove {target}", {"path": str(target)})
+        self._session.require_approval(
+            "fs.remove", f"Remove {target}", {"path": str(target)}
+        )
         target.unlink()
         return True
 
@@ -653,11 +673,15 @@ class Tools:
             inherit_env=command.inherit_env,
         )
 
-    def powershell(self, script: str, options: dict[str, Any] | None = None) -> CommandBuilder:
+    def powershell(
+        self, script: str, options: dict[str, Any] | None = None
+    ) -> CommandBuilder:
         options = options or {}
         executable = str(options.get("executable", "pwsh"))
         encoded = base64.b64encode(str(script).encode("utf-16le")).decode("ascii")
-        return CommandBuilder(self._session, executable)("-NoProfile", "-EncodedCommand", encoded)
+        return CommandBuilder(self._session, executable)(
+            "-NoProfile", "-EncodedCommand", encoded
+        )
 
     def ssh(self, options: dict[str, Any] | None = None) -> SshTools:
         return SshTools(self._session, options or {})
@@ -667,7 +691,9 @@ class FileTools:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def replace(self, path: str | os.PathLike[str], from_or_options: Any, to: str | None = None) -> dict[str, int]:
+    def replace(
+        self, path: str | os.PathLike[str], from_or_options: Any, to: str | None = None
+    ) -> dict[str, int]:
         target = self._resolve(path)
         options = normalize_replace_options(from_or_options, to)
         original = target.read_text()
@@ -676,7 +702,9 @@ class FileTools:
         write_text_file(target, replaced)
         return {"replacements": count}
 
-    def patch(self, path_or_patch: str | os.PathLike[str], maybe_patch: str | None = None) -> list[dict[str, Any]]:
+    def patch(
+        self, path_or_patch: str | os.PathLike[str], maybe_patch: str | None = None
+    ) -> list[dict[str, Any]]:
         patches = parse_patch_input(path_or_patch, maybe_patch)
         return [self._apply_patch(item) for item in patches]
 
@@ -711,7 +739,9 @@ class PatchHunk:
     lines: list[str]
 
 
-def parse_patch_input(path_or_patch: str | os.PathLike[str], maybe_patch: str | None) -> list[FilePatch]:
+def parse_patch_input(
+    path_or_patch: str | os.PathLike[str], maybe_patch: str | None
+) -> list[FilePatch]:
     if maybe_patch is not None:
         return [FilePatch(str(path_or_patch), parse_hunks(str(maybe_patch)))]
     return parse_file_patches(str(path_or_patch))
@@ -764,7 +794,9 @@ def parse_hunks(patch_text: str) -> list[PatchHunk]:
     while index < len(lines):
         if not lines[index].startswith("@@"):
             if lines[index].strip():
-                raise ValueError(f"patch expected hunk header, got {lines[index].rstrip()}")
+                raise ValueError(
+                    f"patch expected hunk header, got {lines[index].rstrip()}"
+                )
             index += 1
             continue
         old_start, old_count, new_start, new_count = parse_hunk_header(lines[index])
@@ -803,7 +835,9 @@ def apply_hunks(original: list[str], hunks: list[PatchHunk], path: str) -> list[
     return output
 
 
-def apply_hunk_lines(original: list[str], output: list[str], hunk: PatchHunk, cursor: int, path: str) -> int:
+def apply_hunk_lines(
+    original: list[str], output: list[str], hunk: PatchHunk, cursor: int, path: str
+) -> int:
     for line in hunk.lines:
         if line.startswith("\\ No newline"):
             continue
@@ -820,23 +854,33 @@ def apply_hunk_lines(original: list[str], output: list[str], hunk: PatchHunk, cu
     return cursor
 
 
-def copy_expected_line(original: list[str], output: list[str], cursor: int, expected: str, path: str) -> int:
+def copy_expected_line(
+    original: list[str], output: list[str], cursor: int, expected: str, path: str
+) -> int:
     ensure_expected_line(original, cursor, expected, path)
     output.append(original[cursor])
     return cursor + 1
 
 
-def remove_expected_line(original: list[str], cursor: int, expected: str, path: str) -> int:
+def remove_expected_line(
+    original: list[str], cursor: int, expected: str, path: str
+) -> int:
     ensure_expected_line(original, cursor, expected, path)
     return cursor + 1
 
 
-def ensure_expected_line(original: list[str], cursor: int, expected: str, path: str) -> None:
+def ensure_expected_line(
+    original: list[str], cursor: int, expected: str, path: str
+) -> None:
     if cursor >= len(original):
-        raise ValueError(f"patch mismatch in {path}: expected {expected.rstrip()} at end of file")
+        raise ValueError(
+            f"patch mismatch in {path}: expected {expected.rstrip()} at end of file"
+        )
     actual = original[cursor]
     if actual != expected:
-        raise ValueError(f"patch mismatch in {path}: expected {expected.rstrip()!r}, found {actual.rstrip()!r}")
+        raise ValueError(
+            f"patch mismatch in {path}: expected {expected.rstrip()!r}, found {actual.rstrip()!r}"
+        )
 
 
 def normalize_replace_options(from_or_options: Any, to: str | None) -> dict[str, Any]:
@@ -856,7 +900,9 @@ def replace_text(text: str, options: dict[str, Any]) -> tuple[str, int]:
     if options.get("all"):
         return text.replace(needle, replacement), len(matches)
     if "occurrence" in options:
-        return replace_occurrence(text, needle, replacement, matches, int(options["occurrence"]))
+        return replace_occurrence(
+            text, needle, replacement, matches, int(options["occurrence"])
+        )
     if len(matches) != 1:
         raise ValueError(f"replace expected exactly one match, found {len(matches)}")
     return text.replace(needle, replacement, 1), 1
@@ -875,28 +921,43 @@ def find_match_offsets(text: str, needle: str) -> list[int]:
         start = index + len(needle)
 
 
-def replace_occurrence(text: str, needle: str, replacement: str, matches: list[int], occurrence: int) -> tuple[str, int]:
+def replace_occurrence(
+    text: str, needle: str, replacement: str, matches: list[int], occurrence: int
+) -> tuple[str, int]:
     if occurrence < 1 or occurrence > len(matches):
         raise ValueError(f"replace occurrence {occurrence} not found")
     index = matches[occurrence - 1]
-    return text[:index] + replacement + text[index + len(needle):], 1
+    return text[:index] + replacement + text[index + len(needle) :], 1
 
 
 class FdNamespace:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def find(self, pattern: str = ".", options: dict[str, Any] | None = None) -> list[str]:
+    def find(
+        self, pattern: str = ".", options: dict[str, Any] | None = None
+    ) -> list[str]:
         normalized = normalize_fd_options(options or {})
         root = resolve_session_path(self._session, normalized.get("root", "."))
-        matches = [path for path in walk_fd_paths(root, normalized) if fd_path_matches(path, root, pattern, normalized)]
-        return [format_path(path, self._session.cwd, bool(normalized.get("absolute_path"))) for path in sorted(matches)]
+        matches = [
+            path
+            for path in walk_fd_paths(root, normalized)
+            if fd_path_matches(path, root, pattern, normalized)
+        ]
+        return [
+            format_path(path, self._session.cwd, bool(normalized.get("absolute_path")))
+            for path in sorted(matches)
+        ]
 
-    def files(self, root: str | os.PathLike[str] = ".", options: dict[str, Any] | None = None) -> list[str]:
+    def files(
+        self, root: str | os.PathLike[str] = ".", options: dict[str, Any] | None = None
+    ) -> list[str]:
         merged = {**(options or {}), "root": root, "type": "file"}
         return self.find(".", merged)
 
-    def dirs(self, root: str | os.PathLike[str] = ".", options: dict[str, Any] | None = None) -> list[str]:
+    def dirs(
+        self, root: str | os.PathLike[str] = ".", options: dict[str, Any] | None = None
+    ) -> list[str]:
         merged = {**(options or {}), "root": root, "type": "directory"}
         return self.find(".", merged)
 
@@ -927,8 +988,16 @@ def walk_fd_paths(root: Path, options: dict[str, Any]) -> list[Path]:
         if not hidden:
             dirs[:] = [item for item in dirs if not is_hidden_name(item)]
             files = [item for item in files if not is_hidden_name(item)]
-        dirs[:] = [item for item in dirs if not excluded_path(current_path / item, root, options["exclude"])]
-        files = [item for item in files if not excluded_path(current_path / item, root, options["exclude"])]
+        dirs[:] = [
+            item
+            for item in dirs
+            if not excluded_path(current_path / item, root, options["exclude"])
+        ]
+        files = [
+            item
+            for item in files
+            if not excluded_path(current_path / item, root, options["exclude"])
+        ]
         if max_depth_int is not None and depth >= max_depth_int:
             dirs[:] = []
         if options.get("type") in {None, "directory"} and current_path != root:
@@ -938,7 +1007,9 @@ def walk_fd_paths(root: Path, options: dict[str, Any]) -> list[Path]:
     return results
 
 
-def fd_path_matches(path: Path, root: Path, pattern: str, options: dict[str, Any]) -> bool:
+def fd_path_matches(
+    path: Path, root: Path, pattern: str, options: dict[str, Any]
+) -> bool:
     if extension := options.get("extension"):
         if path.suffix.lstrip(".") != str(extension).lstrip("."):
             return False
@@ -953,7 +1024,10 @@ def fd_path_matches(path: Path, root: Path, pattern: str, options: dict[str, Any
 
 def excluded_path(path: Path, root: Path, excludes: list[str]) -> bool:
     relative = path.relative_to(root).as_posix()
-    return any(fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative, pattern) for pattern in excludes)
+    return any(
+        fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative, pattern)
+        for pattern in excludes
+    )
 
 
 def relative_depth(path: Path, root: Path) -> int:
@@ -970,21 +1044,35 @@ class RgNamespace:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def __call__(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> SearchResult:
+    def __call__(
+        self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None
+    ) -> SearchResult:
         return self.search(pattern, paths, options)
 
-    def search(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> SearchResult:
+    def search(
+        self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None
+    ) -> SearchResult:
         normalized = normalize_rg_options(options or {})
         matches = collect_rg_matches(self._session, pattern, paths, normalized)
         stdout = render_rg_stdout(matches, normalized)
-        return SearchResult(stdout=stdout, stderr="", exit_code=0 if matches else 1, matches=matches, json_mode=bool(normalized.get("json")))
+        return SearchResult(
+            stdout=stdout,
+            stderr="",
+            exit_code=0 if matches else 1,
+            matches=matches,
+            json_mode=bool(normalized.get("json")),
+        )
 
-    def files(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> list[str]:
+    def files(
+        self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None
+    ) -> list[str]:
         normalized = normalize_rg_options(options or {})
         matches = collect_rg_matches(self._session, pattern, paths, normalized)
         return sorted({match["path"] for match in matches})
 
-    def matches(self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def matches(
+        self, pattern: str, paths: Any = None, options: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         normalized = normalize_rg_options(options or {})
         return collect_rg_matches(self._session, pattern, paths, normalized)
 
@@ -1018,7 +1106,9 @@ def normalize_rg_options(options: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def collect_rg_matches(session: Session, pattern: str, paths: Any, options: dict[str, Any]) -> list[dict[str, Any]]:
+def collect_rg_matches(
+    session: Session, pattern: str, paths: Any, options: dict[str, Any]
+) -> list[dict[str, Any]]:
     compiled = compile_rg_pattern(pattern, options)
     results: list[dict[str, Any]] = []
     per_file_counts: dict[str, int] = {}
@@ -1031,7 +1121,12 @@ def collect_rg_matches(session: Session, pattern: str, paths: Any, options: dict
             limit = options.get("max_count")
             if limit is not None and per_file_counts.get(display, 0) >= int(limit):
                 break
-            match = {"path": display, "line_number": line_number, "line": line, "submatches": submatches}
+            match = {
+                "path": display,
+                "line_number": line_number,
+                "line": line,
+                "submatches": submatches,
+            }
             results.append(match)
             per_file_counts[display] = per_file_counts.get(display, 0) + 1
     return results
@@ -1044,9 +1139,14 @@ def compile_rg_pattern(pattern: str, options: dict[str, Any]) -> re.Pattern[str]
     return re.compile(pattern, flags)
 
 
-def find_rg_submatches(compiled: re.Pattern[str] | None, line: str, pattern: str, options: dict[str, Any]) -> list[dict[str, Any]]:
+def find_rg_submatches(
+    compiled: re.Pattern[str] | None, line: str, pattern: str, options: dict[str, Any]
+) -> list[dict[str, Any]]:
     if compiled is not None:
-        return [{"text": match.group(0), "start": match.start(), "end": match.end()} for match in compiled.finditer(line)]
+        return [
+            {"text": match.group(0), "start": match.start(), "end": match.end()}
+            for match in compiled.finditer(line)
+        ]
     haystack = line.lower() if options.get("ignore_case") else line
     needle = pattern.lower() if options.get("ignore_case") else pattern
     submatches: list[dict[str, Any]] = []
@@ -1069,7 +1169,11 @@ def iter_rg_files(session: Session, paths: Any, options: dict[str, Any]) -> list
             candidates = [root]
         else:
             candidates = list(walk_search_files(root, bool(options.get("hidden"))))
-        files.extend(path for path in candidates if rg_glob_matches(path, session.cwd, options.get("glob", [])))
+        files.extend(
+            path
+            for path in candidates
+            if rg_glob_matches(path, session.cwd, options.get("glob", []))
+        )
     return sorted(dict.fromkeys(files))
 
 
@@ -1097,7 +1201,10 @@ def rg_glob_matches(path: Path, cwd: Path, patterns: list[str]) -> bool:
     if not patterns:
         return True
     display = format_path(path, cwd, False)
-    return any(fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(display, pattern) for pattern in patterns)
+    return any(
+        fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(display, pattern)
+        for pattern in patterns
+    )
 
 
 def read_text_lines(path: Path) -> list[str]:
@@ -1106,11 +1213,16 @@ def read_text_lines(path: Path) -> list[str]:
 
 def render_rg_stdout(matches: list[dict[str, Any]], options: dict[str, Any]) -> str:
     if options.get("json"):
-        return "\n".join(json.dumps(rg_json_event(match)) for match in matches) + ("\n" if matches else "")
+        return "\n".join(json.dumps(rg_json_event(match)) for match in matches) + (
+            "\n" if matches else ""
+        )
     if options.get("files_with_matches"):
         lines = sorted({match["path"] for match in matches})
     else:
-        lines = [f'{match["path"]}:{match["line_number"]}:{match["line"]}' for match in matches]
+        lines = [
+            f"{match['path']}:{match['line_number']}:{match['line']}"
+            for match in matches
+        ]
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -1122,7 +1234,12 @@ class SqliteNamespace:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def query(self, database: str | os.PathLike[str], sql: str, options: dict[str, Any] | None = None) -> Any:
+    def query(
+        self,
+        database: str | os.PathLike[str],
+        sql: str,
+        options: dict[str, Any] | None = None,
+    ) -> Any:
         del options
         target = resolve_session_path(self._session, database)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1139,7 +1256,9 @@ class KubectlNamespace:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def get(self, resource: str, options: dict[str, Any] | None = None) -> CommandBuilder:
+    def get(
+        self, resource: str, options: dict[str, Any] | None = None
+    ) -> CommandBuilder:
         options = options or {}
         args = ["get", str(resource)]
         if name := options.get("name"):
@@ -1184,14 +1303,20 @@ class GithubTools:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def pr_view(self, number: int | str | None = None, options: dict[str, Any] | None = None) -> CommandBuilder:
+    def pr_view(
+        self, number: int | str | None = None, options: dict[str, Any] | None = None
+    ) -> CommandBuilder:
         return gh_builder(self._session, ["pr", "view"], number, options)
 
-    def run_view(self, run_id: int | str | None = None, options: dict[str, Any] | None = None) -> CommandBuilder:
+    def run_view(
+        self, run_id: int | str | None = None, options: dict[str, Any] | None = None
+    ) -> CommandBuilder:
         return gh_builder(self._session, ["run", "view"], run_id, options)
 
     def create_pr(self, options: dict[str, Any] | None = None) -> CommandBuilder:
-        return append_options(CommandBuilder(self._session, "gh")("pr", "create"), options or {})
+        return append_options(
+            CommandBuilder(self._session, "gh")("pr", "create"), options or {}
+        )
 
     prView = pr_view
     runView = run_view
@@ -1260,15 +1385,25 @@ class SshTools:
             return self.run(command)
         return self._build((str(command),), None)
 
-    def _build(self, remote_args: tuple[str, ...], source: CommandBuilder | None) -> CommandBuilder:
+    def _build(
+        self, remote_args: tuple[str, ...], source: CommandBuilder | None
+    ) -> CommandBuilder:
         args = ssh_base_args(self._options) + ["--", *remote_args]
         program = "ssh"
-        if self._options.get("password") and self._options.get("password_mode", "plain") == "plain":
+        if (
+            self._options.get("password")
+            and self._options.get("password_mode", "plain") == "plain"
+        ):
             program = "sshpass"
             args = ["-p", str(self._options["password"]), *args]
         builder = CommandBuilder(self._session, program)(*args)
         if source is not None:
-            builder = builder._copy(cwd=source.cwd, stdin=source.stdin, env_overrides=source.env_overrides, inherit_env=source.inherit_env)
+            builder = builder._copy(
+                cwd=source.cwd,
+                stdin=source.stdin,
+                env_overrides=source.env_overrides,
+                inherit_env=source.inherit_env,
+            )
         return builder
 
 
@@ -1294,11 +1429,15 @@ class TempNamespace:
         self._session = session
 
     def file(self, prefix: str = "tmp", suffix: str = "") -> TmpFile:
-        self._session.require_approval("tmp.file", "Create temporary file", {"prefix": prefix, "suffix": suffix})
+        self._session.require_approval(
+            "tmp.file", "Create temporary file", {"prefix": prefix, "suffix": suffix}
+        )
         return TmpFile.reserve(self._session, prefix, suffix)
 
     def dir(self, prefix: str = "tmp") -> TmpDir:
-        self._session.require_approval("tmp.dir", "Create temporary directory", {"prefix": prefix})
+        self._session.require_approval(
+            "tmp.dir", "Create temporary directory", {"prefix": prefix}
+        )
         return TmpDir.create(self._session, prefix)
 
 
@@ -1321,7 +1460,11 @@ class TmpFile:
         return f"TmpFile({self.path!s})"
 
     def cleanup(self) -> bool:
-        self.session.require_approval("tmp.file.cleanup", f"Remove temporary file {self.path}", {"path": str(self.path)})
+        self.session.require_approval(
+            "tmp.file.cleanup",
+            f"Remove temporary file {self.path}",
+            {"path": str(self.path)},
+        )
         self.path.unlink(missing_ok=True)
         return True
 
@@ -1363,7 +1506,11 @@ class TmpDir:
         return f"TmpDir({self.path!s})"
 
     def cleanup(self) -> bool:
-        self.session.require_approval("tmp.dir.cleanup", f"Remove temporary directory {self.path}", {"path": str(self.path)})
+        self.session.require_approval(
+            "tmp.dir.cleanup",
+            f"Remove temporary directory {self.path}",
+            {"path": str(self.path)},
+        )
         shutil.rmtree(self.path, ignore_errors=True)
         return True
 
@@ -1372,25 +1519,39 @@ class HttpNamespace:
     def __init__(self, session: Session) -> None:
         self._session = session
 
-    def request(self, method: str, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def request(
+        self, method: str, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return HttpRequestBuilder(self._session, method.upper(), url, options or {})
 
-    def get(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def get(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("GET", url, options)
 
-    def post(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def post(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("POST", url, options)
 
-    def put(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def put(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("PUT", url, options)
 
-    def patch(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def patch(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("PATCH", url, options)
 
-    def delete(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def delete(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("DELETE", url, options)
 
-    def head(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def head(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("HEAD", url, options)
 
     def session(self, options: dict[str, Any] | None = None) -> HttpClient:
@@ -1405,36 +1566,58 @@ class HttpClient:
 
     @classmethod
     def from_options(cls, session: Session, options: dict[str, Any]) -> HttpClient:
-        headers = {str(key): str(value) for key, value in options.get("headers", {}).items()}
+        headers = {
+            str(key): str(value) for key, value in options.get("headers", {}).items()
+        }
         base_url = options.get("base_url")
         return cls(session, str(base_url) if base_url is not None else None, headers)
 
-    def request(self, method: str, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def request(
+        self, method: str, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         merged = merge_http_options(self.headers, options or {})
-        return HttpRequestBuilder(self.session, method.upper(), join_base_url(self.base_url, url), merged)
+        return HttpRequestBuilder(
+            self.session, method.upper(), join_base_url(self.base_url, url), merged
+        )
 
-    def get(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def get(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("GET", url, options)
 
-    def post(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def post(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("POST", url, options)
 
-    def put(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def put(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("PUT", url, options)
 
-    def patch(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def patch(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("PATCH", url, options)
 
-    def delete(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def delete(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("DELETE", url, options)
 
-    def head(self, url: str, options: dict[str, Any] | None = None) -> HttpRequestBuilder:
+    def head(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> HttpRequestBuilder:
         return self.request("HEAD", url, options)
 
 
-def merge_http_options(default_headers: dict[str, str], options: dict[str, Any]) -> dict[str, Any]:
+def merge_http_options(
+    default_headers: dict[str, str], options: dict[str, Any]
+) -> dict[str, Any]:
     merged = dict(options)
-    request_headers = {str(key): str(value) for key, value in options.get("headers", {}).items()}
+    request_headers = {
+        str(key): str(value) for key, value in options.get("headers", {}).items()
+    }
     merged["headers"] = {**default_headers, **request_headers}
     return merged
 
@@ -1453,11 +1636,17 @@ class HttpRequestBuilder:
     options: dict[str, Any]
 
     def run(self) -> HttpResponse:
-        self.session.require_approval("http.request", f"{self.method} {self.url}", {"method": self.method, "url": self.url})
+        self.session.require_approval(
+            "http.request",
+            f"{self.method} {self.url}",
+            {"method": self.method, "url": self.url},
+        )
         request = build_url_request(self.method, self.url, self.options)
         try:
             with urllib.request.urlopen(request) as response:
-                return http_response_from(response.status, response.headers.items(), response.read())
+                return http_response_from(
+                    response.status, response.headers.items(), response.read()
+                )
         except urllib.error.HTTPError as error:
             return http_response_from(error.code, error.headers.items(), error.read())
 
@@ -1497,13 +1686,19 @@ class HttpResponse:
         return json.loads(self.text())
 
 
-def build_url_request(method: str, url: str, options: dict[str, Any]) -> urllib.request.Request:
-    headers = {str(key): str(value) for key, value in options.get("headers", {}).items()}
+def build_url_request(
+    method: str, url: str, options: dict[str, Any]
+) -> urllib.request.Request:
+    headers = {
+        str(key): str(value) for key, value in options.get("headers", {}).items()
+    }
     data = encode_request_body(options, headers)
     return urllib.request.Request(url, data=data, headers=headers, method=method)
 
 
-def encode_request_body(options: dict[str, Any], headers: dict[str, str]) -> bytes | None:
+def encode_request_body(
+    options: dict[str, Any], headers: dict[str, str]
+) -> bytes | None:
     if "json" in options:
         headers.setdefault("Content-Type", "application/json")
         return json.dumps(options["json"]).encode()
@@ -1517,7 +1712,11 @@ def encode_request_body(options: dict[str, Any], headers: dict[str, str]) -> byt
 
 
 def http_response_from(status: int, headers: Any, body: bytes) -> HttpResponse:
-    return HttpResponse(status=status, headers={str(key): str(value) for key, value in headers}, body=body)
+    return HttpResponse(
+        status=status,
+        headers={str(key): str(value) for key, value in headers},
+        body=body,
+    )
 
 
 _process_ids = itertools.count(1)
@@ -1559,7 +1758,9 @@ class CommandBuilder:
     def in_(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
         return self._copy(cwd=self._resolve(cwd))
 
-    def env(self, name_or_values: str | dict[Any, Any], value: object | None = None) -> CommandBuilder:
+    def env(
+        self, name_or_values: str | dict[Any, Any], value: object | None = None
+    ) -> CommandBuilder:
         updates = normalize_env_updates(name_or_values, value)
         return self._copy(env_overrides={**self.env_overrides, **updates})
 
@@ -1581,14 +1782,20 @@ class CommandBuilder:
     def stdin_text(self, text: str) -> CommandBuilder:
         return self._copy(stdin=text, stdin_source=None)
 
-    def stdin_from(self, source: CommandBuilder | CommandStream | CommandResult | str | bytes, stream: str = "stdout") -> CommandBuilder:
+    def stdin_from(
+        self,
+        source: CommandBuilder | CommandStream | CommandResult | str | bytes,
+        stream: str = "stdout",
+    ) -> CommandBuilder:
         validate_command_stream_name(stream)
         if isinstance(source, CommandBuilder):
             return self._copy(stdin=None, stdin_source=source.stream(stream))
         if isinstance(source, CommandStream):
             return self._copy(stdin=None, stdin_source=source)
         if isinstance(source, CommandResult):
-            return self._copy(stdin=select_command_output(source, stream), stdin_source=source)
+            return self._copy(
+                stdin=select_command_output(source, stream), stdin_source=source
+            )
         if isinstance(source, bytes):
             return self.stdin_text(source.decode())
         return self.stdin_text(str(source))
@@ -1611,7 +1818,9 @@ class CommandBuilder:
     def run(self) -> CommandResult:
         return self._run(merge_stderr=False)
 
-    def pipe_to(self, next_builder: CommandBuilder, stream: str = "stdout") -> CommandResult:
+    def pipe_to(
+        self, next_builder: CommandBuilder, stream: str = "stdout"
+    ) -> CommandResult:
         return next_builder.stdin_from(self.stream(stream)).run()
 
     def text(self) -> str:
@@ -1717,7 +1926,9 @@ class CommandBuilder:
     def _resolve_stdin(self) -> tuple[str | None, tuple[CommandResult, ...]]:
         if isinstance(self.stdin_source, CommandStream):
             upstream = self.stdin_source.builder.run()
-            return select_command_output(upstream, self.stdin_source.stream), (upstream,)
+            return select_command_output(upstream, self.stdin_source.stream), (
+                upstream,
+            )
         if isinstance(self.stdin_source, CommandResult):
             return self.stdin, (self.stdin_source,)
         return self.stdin, ()
@@ -1786,7 +1997,9 @@ class ProcessHandle:
         return self.wait(timeout).json()
 
 
-def normalize_env_updates(name_or_values: str | dict[Any, Any], value: object | None) -> dict[str, str]:
+def normalize_env_updates(
+    name_or_values: str | dict[Any, Any], value: object | None
+) -> dict[str, str]:
     if isinstance(name_or_values, dict):
         return {str(key): str(item) for key, item in name_or_values.items()}
     if value is None:
@@ -1813,7 +2026,9 @@ def commit_message(subject: str, options: dict[str, Any]) -> str:
     return f"{subject}\n\n{body}\n" if body else f"{subject}\n"
 
 
-def append_commit_flags(builder: CommandBuilder, options: dict[str, Any]) -> CommandBuilder:
+def append_commit_flags(
+    builder: CommandBuilder, options: dict[str, Any]
+) -> CommandBuilder:
     flag_map = {
         "amend": "--amend",
         "no_edit": "--no-edit",
@@ -1856,7 +2071,12 @@ def append_options(builder: CommandBuilder, options: dict[str, Any]) -> CommandB
     return builder
 
 
-def gh_builder(session: Session, prefix: list[str], target: int | str | None, options: dict[str, Any] | None) -> CommandBuilder:
+def gh_builder(
+    session: Session,
+    prefix: list[str],
+    target: int | str | None,
+    options: dict[str, Any] | None,
+) -> CommandBuilder:
     builder = CommandBuilder(session, "gh")(*prefix)
     if target is not None:
         builder = builder(str(target))
@@ -1892,7 +2112,11 @@ class ImmediateCommand:
         self._command = command
 
     def __call__(self, *args: object) -> CommandResult:
-        return self._command(*args).run()
+        result = self._command(*args).run()
+        sys.stdout.write(result.stdout)
+        sys.stdout.write(result.stderr)
+        sys.stdout.flush()
+        return result
 
 
 PiRequestHandler = Callable[[str, Any], Any]
@@ -2024,7 +2248,7 @@ class SessionStore:
 DIRECT_PROCESS_MODULES = {"subprocess"}
 DIRECT_PROCESS_OS_CALLS = {"system", "popen"}
 DIRECT_PROCESS_OS_PREFIXES = ("exec", "spawn")
-DIRECT_PROCESS_GUIDANCE = "Use cli.<program>(*args).run() or run.<program>(*args) instead of direct process execution."
+DIRECT_PROCESS_GUIDANCE = "Use run.<program>(*args) for routine command execution, or cli.<program>(*args) when you need the advanced command builder (cwd, env, stdin, streams, piping, or inspection). Command names are resolved dynamically, so dir(run) and dir(cli) may be empty even when run.<program> works."
 
 
 class DirectProcessExecutionVisitor(ast.NodeVisitor):
@@ -2057,7 +2281,12 @@ class DirectProcessExecutionVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        call_name = direct_process_call_name(node.func, self.subprocess_aliases, self.os_aliases, self.imported_process_functions)
+        call_name = direct_process_call_name(
+            node.func,
+            self.subprocess_aliases,
+            self.os_aliases,
+            self.imported_process_functions,
+        )
         if call_name is not None:
             self.violations.append(call_name)
         self.generic_visit(node)
@@ -2072,7 +2301,9 @@ def reject_direct_process_execution(code: str) -> None:
     visitor.visit(module)
     if visitor.violations:
         call_name = visitor.violations[0]
-        raise ValueError(f"Direct process execution via {call_name} is not allowed in pyrun_eval. {DIRECT_PROCESS_GUIDANCE}")
+        raise ValueError(
+            f"Direct process execution via {call_name} is not allowed in pyrun_eval. {DIRECT_PROCESS_GUIDANCE}"
+        )
 
 
 def direct_process_call_name(
@@ -2095,7 +2326,9 @@ def direct_process_call_name(
 
 
 def is_direct_os_process_call(name: str) -> bool:
-    return name in DIRECT_PROCESS_OS_CALLS or name.startswith(DIRECT_PROCESS_OS_PREFIXES)
+    return name in DIRECT_PROCESS_OS_CALLS or name.startswith(
+        DIRECT_PROCESS_OS_PREFIXES
+    )
 
 
 def evaluate_python(code: str, globals_map: dict[str, Any]) -> Any:
@@ -2116,7 +2349,9 @@ def evaluate_statements(code: str, globals_map: dict[str, Any]) -> Any:
     return None
 
 
-def evaluate_exec_with_trailing_expr(module: ast.Module, globals_map: dict[str, Any]) -> Any:
+def evaluate_exec_with_trailing_expr(
+    module: ast.Module, globals_map: dict[str, Any]
+) -> Any:
     prefix = ast.Module(body=module.body[:-1], type_ignores=module.type_ignores)
     ast.fix_missing_locations(prefix)
     if prefix.body:

@@ -227,10 +227,14 @@ Available globals:
   `hr({'a': 1}).select('a')`. Python cannot safely patch builtins the way
   Hostrun patches JavaScript prototypes, so these helpers are explicit globals
   instead. Wrapper values are unwrapped during JSONL result conversion.
-- `cli.<program>(*args)`: command builder. Uses argv-style execution and no
-  shell parsing. Returning a builder from JSONL/session evaluation serializes it
-  as `{program, args, cwd, env, stdin}` for inspection.
-- `run.<program>(*args)`: immediate command execution.
+- `run.<program>(*args)`: preferred helper for routine command execution. It uses
+  argv-style execution with no shell parsing and returns a `CommandResult`
+  directly. Command names are resolved dynamically via attribute access, so
+  `dir(run)` may be empty even when `run.niri(...)` or another command works.
+- `cli.<program>(*args)`: advanced command-builder helper. Use it when you need
+  capture helpers, piping, cwd/env/stdin configuration, streams, spawning,
+  redirects, or inspection. Returning a builder from JSONL/session evaluation
+  serializes it as `{program, args, cwd, env, stdin}`.
 
 Command results expose:
 
@@ -241,13 +245,19 @@ Command results expose:
 - `lines()`
 - `json()`
 
-Command builders support:
+Use `run` first for routine command execution:
 
 ```python
-cli.python3('-c', 'print(123)').run()
-cli.python3('-c', 'print(123)').text()
-cli.python3('-c', 'print(123)').lines()
-cli.python3('-c', 'import json; print(json.dumps({"ok": True}))').json()
+run.ls('-la')
+run.python3('-c', 'print(123)')
+run.python3('-c', 'print(123)').text()
+run.python3('-c', 'print(123)').lines()
+run.python3('-c', 'import json; print(json.dumps({"ok": True}))').json()
+```
+
+Use `cli` when you need command-builder features:
+
+```python
 cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()
 cli.python3('-c', 'import os; print(os.environ["NAME"])').env('NAME', 'value').run()
 cli.python3('-c', 'import os; print(os.environ)').env_clear().env('NAME', 'value').run()
@@ -284,7 +294,7 @@ default; the downstream `CommandResult.upstream_results` tuple records upstream
 | Filesystem helpers | Partial | Read/write/exists/remove/glob/open plus JSON, JSONL, CSV, TSV, TOML-read support. YAML is not supported with stdlib only. |
 | `tools.file.replace` / `patch` | Implemented | Exact replacement and unified-diff hunk application are present; deletion patches are rejected. |
 | Temporary files/directories | Implemented | `tmp.file()` and `tmp.dir()` create cleanup-capable handles; pending approval gates create/write/cleanup side effects. |
-| Command builder / `run` | Partial | `cli.<program>` and `run.<program>` use argv execution, cwd/env/stdin helpers, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
+| Command execution / builder | Partial | `run.<program>` is the preferred immediate-execution API. `cli.<program>` returns advanced builders for cwd/env/stdin helpers, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
 | Spawn and pipeline helpers | Partial | `.spawn()` returns process handles; pipeline helpers are capture-then-feed composition, not OS pipe FD streaming. |
 | HTTP and sessions | Partial | Stdlib `urllib` request builders, response helpers, `to_file`, base URL, and shared headers exist. No retry, cookie jar, TLS option, or streaming support yet. |
 | `rg`, `fd`, and `sqlite` wrappers | Partial | Pure-Python subsets cover common search/discovery/query flows; they are not full CLI-compatible facades. |

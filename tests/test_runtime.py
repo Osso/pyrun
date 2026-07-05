@@ -407,9 +407,11 @@ d.cleanup()
         data = self.eval(
             "run.python3('-c', 'import json; print(json.dumps({\"a\": 1}))').json()"
         )["value"]
+        returncode = self.eval("cli.python3('-c', 'print(1)').run().returncode")["value"]
 
         self.assertEqual(lines, ["1", "2"])
         self.assertEqual(data, {"a": 1})
+        self.assertEqual(returncode, 0)
 
     def test_command_builder_in_runs_command_in_provided_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -627,6 +629,23 @@ d.cleanup()
         self.assertEqual(json_handle.json(timeout=5), {"n": 3})
         self.assertTrue(killed)
         self.assertNotEqual(killed_result.exit_code, 0)
+
+    def test_command_builder_run_accepts_timeout(self):
+        result = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "print('done')",
+        ).run(timeout=5)
+
+        self.assertEqual(result.stdout, "done\n")
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.exit_code, 0)
+
+    def test_command_builder_run_timeout_kills_process(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            CommandBuilder(Session(), sys.executable)(
+                "-c",
+                "import time; time.sleep(30)",
+            ).run(timeout=0.1)
 
     def test_command_builder_does_not_parse_shell_syntax(self):
         result = CommandBuilder(Session(), sys.executable)(

@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -418,6 +419,10 @@ class CommandResult:
 
     def json(self) -> Any:
         return json.loads(self.stdout)
+
+    @property
+    def returncode(self) -> int:
+        return self.exit_code
 
 
 class ApprovalRequired(Exception):
@@ -1816,8 +1821,8 @@ class CommandBuilder:
     def stdin_tsv(self, rows: list[Any]) -> CommandBuilder:
         return self.stdin_text(serialize_delimited_rows(rows, "\t"))
 
-    def run(self) -> CommandResult:
-        return self._run(merge_stderr=False)
+    def run(self, timeout: float | None = None) -> CommandResult:
+        return self._run(merge_stderr=False, timeout=timeout)
 
     def pipe_to(
         self, next_builder: CommandBuilder, stream: str = "stdout"
@@ -1842,8 +1847,8 @@ class CommandBuilder:
     def stderr_json(self) -> Any:
         return json.loads(self.stderr_text())
 
-    def combined_text(self) -> str:
-        return self._run(merge_stderr=True).stdout
+    def combined_text(self, timeout: float | None = None) -> str:
+        return self._run(merge_stderr=True, timeout=timeout).stdout
 
     def to_file(self, path: str | os.PathLike[str]) -> CommandResult:
         result = self.run()
@@ -1855,8 +1860,10 @@ class CommandBuilder:
         write_text_file(self._resolve(path), result.stderr)
         return result
 
-    def combined_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
-        result = self._run(merge_stderr=True)
+    def combined_to_file(
+        self, path: str | os.PathLike[str], timeout: float | None = None
+    ) -> CommandResult:
+        result = self._run(merge_stderr=True, timeout=timeout)
         write_text_file(self._resolve(path), result.stdout)
         return result
 
@@ -1866,8 +1873,10 @@ class CommandBuilder:
     def stderr_tee(self, path: str | os.PathLike[str]) -> CommandResult:
         return self.stderr_to_file(path)
 
-    def combined_tee(self, path: str | os.PathLike[str]) -> CommandResult:
-        return self.combined_to_file(path)
+    def combined_tee(
+        self, path: str | os.PathLike[str], timeout: float | None = None
+    ) -> CommandResult:
+        return self.combined_to_file(path, timeout=timeout)
 
     def spawn(self) -> ProcessHandle:
         self._require_approval()
@@ -1892,25 +1901,78 @@ class CommandBuilder:
             upstream_results=upstream_results,
         )
 
-    def _run(self, merge_stderr: bool) -> CommandResult:
+    def _run(self, merge_stderr: bool, timeout: float | None = None) -> CommandResult:
         self._require_approval()
         stdin, upstream_results = self._resolve_stdin()
-        completed = subprocess.run(
-            [self.program, *self.args],
-            input=stdin,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
-            cwd=self.cwd or self.session.cwd,
-            env=self._subprocess_env(),
-            shell=False,
-            check=False,
-        )
+        completed = self._run_streaming(stdin, merge_stderr, timeout=timeout)
         return CommandResult(
             stdout=completed.stdout,
             stderr="" if merge_stderr else completed.stderr,
             exit_code=completed.returncode,
             upstream_results=upstream_results,
+        )
+
+    def _run_streaming(
+        self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        process = subprocess.Popen(
+            [self.program, *self.args],
+            stdin=subprocess.PIPE if stdin is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+            text=True,
+            cwd=self.cwd or self.session.cwd,
+            env=self._subprocess_env(),
+            shell=False,
+        )
+        if stdin is not None and process.stdin is not None:
+            process.stdin.write(stdin)
+            process.stdin.close()
+
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+
+        def pump(stream: io.TextIOBase | None, sink: list[str]) -> None:
+            if stream is None:
+                return
+            for chunk in iter(lambda: stream.read(1), ""):
+                sink.append(chunk)
+            stream.close()
+
+        threads: list[threading.Thread] = []
+        if process.stdout is not None:
+            thread = threading.Thread(
+                target=pump, args=(process.stdout, stdout_chunks), daemon=True
+            )
+            thread.start()
+            threads.append(thread)
+        if not merge_stderr and process.stderr is not None:
+            thread = threading.Thread(
+                target=pump, args=(process.stderr, stderr_chunks), daemon=True
+            )
+            thread.start()
+            threads.append(thread)
+        command = [self.program, *self.args]
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            returncode = process.wait()
+            for thread in threads:
+                thread.join()
+            raise subprocess.TimeoutExpired(
+                command,
+                exc.timeout,
+                output="".join(stdout_chunks),
+                stderr="" if merge_stderr else "".join(stderr_chunks),
+            ) from exc
+        for thread in threads:
+            thread.join()
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=returncode,
+            stdout="".join(stdout_chunks),
+            stderr="" if merge_stderr else "".join(stderr_chunks),
         )
 
     def _require_approval(self) -> None:
@@ -2220,7 +2282,7 @@ class SessionStore:
         console = io.StringIO()
         pi_global = self._build_pi_global(pi, pi_bridge, pi_request_handler)
         try:
-            with contextlib.redirect_stdout(console):
+            with contextlib.redirect_stdout(console), contextlib.redirect_stderr(console):
                 value = evaluate_python(code, session.build_globals(pi_global))
         except ApprovalRequired as exc:
             return {
@@ -2378,9 +2440,9 @@ def evaluate_exec_with_trailing_expr(
     return eval(compile(expression, "<pyrun>", "eval"), globals_map)  # noqa: S307
 
 
-def console_lines(console: io.StringIO) -> list[str]:
+def console_lines(console: io.StringIO, line_limit: int = 300) -> list[str]:
     text = console.getvalue()
-    return text.splitlines()
+    return text.splitlines()[-line_limit:]
 
 
 def to_json_value(value: Any) -> Any:

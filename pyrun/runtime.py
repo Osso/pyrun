@@ -2242,12 +2242,30 @@ class PiMessages:
         return self._request_handler("messages.last", None)
 
 
+class PiModels:
+    def __init__(self, request_handler: PiRequestHandler) -> None:
+        self._request_handler = request_handler
+
+    def scoped(self) -> Any:
+        return self._request_handler("models.scoped", None)
+
+
+class PiTools:
+    def __init__(self, request_handler: PiRequestHandler) -> None:
+        self._request_handler = request_handler
+
+    def call(self, name: str, params: Any = None) -> Any:
+        return self._request_handler("tools.call", {"name": name, "params": params})
+
+
 class PiBridge:
     def __init__(self, snapshot: Any, request_handler: PiRequestHandler) -> None:
         footer = snapshot.get("footer") if isinstance(snapshot, dict) else None
         self.footer = PiFooter(footer)
         self.agents = PiAgents(request_handler)
         self.messages = PiMessages(request_handler)
+        self.models = PiModels(request_handler)
+        self.tools = PiTools(request_handler)
         self._request_handler = request_handler
 
     def compact(self, params: Any = None) -> Any:
@@ -2255,6 +2273,11 @@ class PiBridge:
 
     def restart(self, params: Any = None) -> Any:
         return self._request_handler("restart", params)
+
+    def web_search(self, query: str | dict[str, Any]) -> Any:
+        if isinstance(query, str):
+            query = {"query": query}
+        return self.tools.call("web_search", query)
 
 
 class SessionStore:

@@ -283,6 +283,116 @@ class JsonlProtocolTests(unittest.TestCase):
             process.terminate()
             process.wait(timeout=5)
 
+    def test_pi_models_scoped_request_round_trips(self):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pyrun.jsonl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(
+                json.dumps(
+                    {"code": "pi.models.scoped()", "pi": {}, "pi_bridge": True}
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+
+            request = json.loads(process.stdout.readline())
+            self.assertEqual(
+                request,
+                {
+                    "type": "pi_request",
+                    "method": "models.scoped",
+                    "params": None,
+                },
+            )
+
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "result": [
+                            {
+                                "provider": "openai",
+                                "id": "gpt-5.5",
+                                "name": "GPT-5.5",
+                                "thinkingLevel": "high",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            result = json.loads(process.stdout.readline())
+
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(
+                result["value"],
+                [
+                    {
+                        "provider": "openai",
+                        "id": "gpt-5.5",
+                        "name": "GPT-5.5",
+                        "thinkingLevel": "high",
+                    }
+                ],
+            )
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=5)
+
+    def test_pi_web_search_request_round_trips(self):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pyrun.jsonl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(
+                json.dumps(
+                    {"code": "pi.web_search('current Pi release')", "pi": {}, "pi_bridge": True}
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+
+            request = json.loads(process.stdout.readline())
+            self.assertEqual(
+                request,
+                {
+                    "type": "pi_request",
+                    "method": "tools.call",
+                    "params": {"name": "web_search", "params": {"query": "current Pi release"}},
+                },
+            )
+
+            process.stdin.write(json.dumps({"result": {"text": "Pi release notes"}}) + "\n")
+            process.stdin.flush()
+            result = json.loads(process.stdout.readline())
+
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(result["value"], {"text": "Pi release notes"})
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

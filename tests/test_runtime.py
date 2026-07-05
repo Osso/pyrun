@@ -170,6 +170,23 @@ helper_using_subprocess.run_child()
         self.assertEqual(result["type"], "completed")
         self.assertEqual(result["value"], "123")
 
+    def test_pi_web_search_bridge_requests_query(self):
+        handled = []
+
+        result = self.store.evaluate(
+            "pi.web_search('current Pi release')",
+            pi={},
+            pi_bridge=True,
+            pi_request_handler=lambda method, params: handled.append((method, params)) or {"text": "Pi release notes"},
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], {"text": "Pi release notes"})
+        self.assertEqual(
+            handled,
+            [("tools.call", {"name": "web_search", "params": {"query": "current Pi release"}})],
+        )
+
     def test_pending_approval_read_only_fs_and_ctx_still_work(self):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "note.txt").write_text("hello")

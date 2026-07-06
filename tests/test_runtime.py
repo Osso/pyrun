@@ -389,6 +389,21 @@ d.cleanup()
         self.assertEqual(result["stderr"], "")
         self.assertEqual(result["exit_code"], 0)
 
+    def test_run_namespace_accepts_timeout_for_immediate_commands(self):
+        result = self.eval("run.python3('-c', 'print(789)', timeout=5)")["value"]
+
+        self.assertEqual(result["stdout"], "789\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_run_namespace_enforces_timeout_for_immediate_commands(self):
+        code = "import time; time.sleep(5)"
+
+        result = self.eval(f"run.python3('-c', {code!r}, timeout=0.01)")
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn("timed out", result["error"])
+
     def test_run_namespace_surfaces_stdout_and_stderr(self):
         code = (
             "import sys; "

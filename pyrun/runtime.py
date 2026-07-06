@@ -2184,8 +2184,8 @@ class ImmediateCommand:
         self._session = session
         self._command = command
 
-    def __call__(self, *args: object) -> CommandResult:
-        result = self._command(*args).run()
+    def __call__(self, *args: object, timeout: float | None = None) -> CommandResult:
+        result = self._command(*args).run(timeout=timeout)
         self._session.command_history.append(result)
         sys.stdout.write(tail_command_output(result))
         sys.stdout.flush()

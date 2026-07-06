@@ -1757,9 +1757,13 @@ class CommandBuilder:
     env_overrides: dict[str, str] = field(default_factory=dict)
     stdin_source: CommandStream | CommandResult | None = None
     inherit_env: bool = True
+    timeout_seconds: float | None = None
 
     def __call__(self, *args: object) -> CommandBuilder:
         return self._copy(args=self.args + tuple(str(arg) for arg in args))
+
+    def timeout(self, seconds: float | None) -> CommandBuilder:
+        return self._copy(timeout_seconds=seconds)
 
     def in_(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
         return self._copy(cwd=self._resolve(cwd))
@@ -1822,7 +1826,7 @@ class CommandBuilder:
         return self.stdin_text(serialize_delimited_rows(rows, "\t"))
 
     def run(self, timeout: float | None = None) -> CommandResult:
-        return self._run(merge_stderr=False, timeout=timeout)
+        return self._run(merge_stderr=False, timeout=self._effective_timeout(timeout))
 
     def pipe_to(
         self, next_builder: CommandBuilder, stream: str = "stdout"
@@ -1848,7 +1852,7 @@ class CommandBuilder:
         return json.loads(self.stderr_text())
 
     def combined_text(self, timeout: float | None = None) -> str:
-        return self._run(merge_stderr=True, timeout=timeout).stdout
+        return self._run(merge_stderr=True, timeout=self._effective_timeout(timeout)).stdout
 
     def to_file(self, path: str | os.PathLike[str]) -> CommandResult:
         result = self.run()
@@ -1863,7 +1867,7 @@ class CommandBuilder:
     def combined_to_file(
         self, path: str | os.PathLike[str], timeout: float | None = None
     ) -> CommandResult:
-        result = self._run(merge_stderr=True, timeout=timeout)
+        result = self._run(merge_stderr=True, timeout=self._effective_timeout(timeout))
         write_text_file(self._resolve(path), result.stdout)
         return result
 
@@ -1899,6 +1903,7 @@ class CommandBuilder:
             stdin=stdin,
             process=process,
             upstream_results=upstream_results,
+            timeout_seconds=self.timeout_seconds,
         )
 
     def _run(self, merge_stderr: bool, timeout: float | None = None) -> CommandResult:
@@ -2010,9 +2015,13 @@ class CommandBuilder:
             "env_overrides": self.env_overrides,
             "stdin_source": self.stdin_source,
             "inherit_env": self.inherit_env,
+            "timeout_seconds": self.timeout_seconds,
         }
         values.update(changes)
         return CommandBuilder(**values)
+
+    def _effective_timeout(self, timeout: float | None) -> float | None:
+        return self.timeout_seconds if timeout is None else timeout
 
     def _resolve(self, path: str | os.PathLike[str]) -> Path:
         candidate = Path(path).expanduser()
@@ -2030,12 +2039,33 @@ class ProcessHandle:
     stdin: str | None
     process: subprocess.Popen[str]
     upstream_results: tuple[CommandResult, ...] = ()
+    timeout_seconds: float | None = None
     _result: CommandResult | None = None
 
     def wait(self, timeout: float | None = None) -> CommandResult:
         if self._result is not None:
             return self._result
-        stdout, stderr = self.process.communicate(input=self.stdin, timeout=timeout)
+        effective_timeout = self.timeout_seconds if timeout is None else timeout
+        try:
+            stdout, stderr = self.process.communicate(
+                input=self.stdin,
+                timeout=effective_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self.process.kill()
+            stdout, stderr = self.process.communicate()
+            self._result = CommandResult(
+                stdout=stdout,
+                stderr=stderr,
+                exit_code=self.process.returncode,
+                upstream_results=self.upstream_results,
+            )
+            raise subprocess.TimeoutExpired(
+                [self.program, *self.args],
+                exc.timeout,
+                output=stdout,
+                stderr=stderr,
+            ) from exc
         self._result = CommandResult(
             stdout=stdout,
             stderr=stderr,
@@ -2168,6 +2198,16 @@ class CommandNamespace:
         if self._immediate:
             return ImmediateCommand(self._session, command)
         return command
+
+    def command(
+        self, program: object, *args: object, timeout: float | None = None
+    ) -> CommandBuilder | CommandResult:
+        builder = CommandBuilder(self._session, str(program))(*args)
+        if self._immediate:
+            return ImmediateCommand(self._session, builder)(timeout=timeout)
+        if timeout is not None:
+            return builder.timeout(timeout)
+        return builder
 
     def history(self) -> list[CommandResult]:
         return list(self._session.command_history)
@@ -2479,6 +2519,8 @@ def to_json_value(value: Any) -> Any:
             "env": to_json_value(value.env_overrides),
             "stdin": value.stdin,
         }
+        if value.timeout_seconds is not None:
+            serialized["timeout"] = value.timeout_seconds
         if value.stdin_source is not None:
             serialized["stdin_from"] = to_json_value(value.stdin_source)
         return serialized

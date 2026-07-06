@@ -389,6 +389,22 @@ d.cleanup()
         self.assertEqual(result["stderr"], "")
         self.assertEqual(result["exit_code"], 0)
 
+    def test_cli_command_builds_command_from_program_argument(self):
+        result = self.eval("cli.command('python3', '-c', 'print(321)').run()")[
+            "value"
+        ]
+
+        self.assertEqual(result["stdout"], "321\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_run_command_executes_program_argument_immediately(self):
+        result = self.eval("run.command('python3', '-c', 'print(654)')")["value"]
+
+        self.assertEqual(result["stdout"], "654\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
     def test_run_namespace_accepts_timeout_for_immediate_commands(self):
         result = self.eval("run.python3('-c', 'print(789)', timeout=5)")["value"]
 
@@ -671,6 +687,46 @@ d.cleanup()
         self.assertEqual(result.stdout, "done\n")
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.exit_code, 0)
+
+    def test_command_builder_timeout_sets_default_run_timeout(self):
+        result = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "print('done')",
+        ).timeout(5).run()
+
+        self.assertEqual(result.stdout, "done\n")
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.exit_code, 0)
+
+    def test_command_builder_timeout_kills_process(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            CommandBuilder(Session(), sys.executable)(
+                "-c",
+                "import time; time.sleep(30)",
+            ).timeout(0.1).run()
+
+    def test_command_builder_run_timeout_overrides_builder_timeout(self):
+        result = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "print('done')",
+        ).timeout(0.1).run(timeout=5)
+
+        self.assertEqual(result.stdout, "done\n")
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.exit_code, 0)
+
+    def test_command_builder_timeout_is_serialized(self):
+        value = self.eval("cli.command('python3').timeout(5)")["value"]
+
+        self.assertEqual(value["program"], "python3")
+        self.assertEqual(value["timeout"], 5)
+
+    def test_command_builder_spawn_wait_uses_builder_timeout(self):
+        with self.assertRaises(subprocess.TimeoutExpired):
+            CommandBuilder(Session(), sys.executable)(
+                "-c",
+                "import time; time.sleep(30)",
+            ).timeout(0.1).spawn().wait()
 
     def test_command_builder_run_timeout_kills_process(self):
         with self.assertRaises(subprocess.TimeoutExpired):

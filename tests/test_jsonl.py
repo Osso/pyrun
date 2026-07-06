@@ -393,6 +393,56 @@ class JsonlProtocolTests(unittest.TestCase):
             process.terminate()
             process.wait(timeout=5)
 
+    def test_pi_commands_requests_round_trip(self):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pyrun.jsonl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(
+                json.dumps(
+                    {"code": "[pi.commands.list(), pi.commands.run('usage', 'reset')]", "pi": {}, "pi_bridge": True}
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+
+            list_request = json.loads(process.stdout.readline())
+            self.assertEqual(
+                list_request,
+                {"type": "pi_request", "method": "commands.list", "params": None},
+            )
+            process.stdin.write(json.dumps({"result": [{"name": "usage"}]}) + "\n")
+            process.stdin.flush()
+
+            run_request = json.loads(process.stdout.readline())
+            self.assertEqual(
+                run_request,
+                {
+                    "type": "pi_request",
+                    "method": "commands.run",
+                    "params": {"name": "usage", "args": "reset"},
+                },
+            )
+            process.stdin.write(json.dumps({"result": {"displayed": True}}) + "\n")
+            process.stdin.flush()
+            result = json.loads(process.stdout.readline())
+
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(result["value"], [[{"name": "usage"}], {"displayed": True}])
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

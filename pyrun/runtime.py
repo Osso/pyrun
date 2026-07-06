@@ -2298,6 +2298,17 @@ class PiTools:
         return self._request_handler("tools.call", {"name": name, "params": params})
 
 
+class PiCommands:
+    def __init__(self, request_handler: PiRequestHandler) -> None:
+        self._request_handler = request_handler
+
+    def list(self) -> Any:
+        return self._request_handler("commands.list", None)
+
+    def run(self, name: str, args: str = "") -> Any:
+        return self._request_handler("commands.run", {"name": name, "args": args})
+
+
 class PiBridge:
     def __init__(self, snapshot: Any, request_handler: PiRequestHandler) -> None:
         footer = snapshot.get("footer") if isinstance(snapshot, dict) else None
@@ -2306,6 +2317,7 @@ class PiBridge:
         self.messages = PiMessages(request_handler)
         self.models = PiModels(request_handler)
         self.tools = PiTools(request_handler)
+        self.commands = PiCommands(request_handler)
         self._request_handler = request_handler
 
     def compact(self, params: Any = None) -> Any:

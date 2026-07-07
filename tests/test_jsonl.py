@@ -110,6 +110,46 @@ class JsonlProtocolTests(unittest.TestCase):
         self.assertEqual(result["type"], "error")
         self.assertIn("name 'pi' is not defined", result["error"])
 
+    def test_print_output_streams_before_final_result(self):
+        process = subprocess.Popen(
+            [sys.executable, "-m", "pyrun.jsonl"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        try:
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "code": "import time\nprint('tick 1', flush=True)\ntime.sleep(0.2)\nprint('tick 2', flush=True)\n'done'",
+                        "stream_console": True,
+                    }
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+
+            first = json.loads(process.stdout.readline())
+            self.assertEqual(first, {"type": "console", "stream": "stdout", "text": "tick 1\n"})
+
+            second = json.loads(process.stdout.readline())
+            self.assertEqual(second, {"type": "console", "stream": "stdout", "text": "tick 2\n"})
+
+            result = json.loads(process.stdout.readline())
+            self.assertEqual(result["type"], "completed")
+            self.assertEqual(result["console"], ["tick 1", "tick 2"])
+            self.assertEqual(result["value"], "done")
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+            process.terminate()
+            process.wait(timeout=5)
+
     def test_pi_agent_selection_requests_roundtrip_through_jsonl_subprocess(self):
         process = subprocess.Popen(
             [sys.executable, "-m", "pyrun.jsonl"],

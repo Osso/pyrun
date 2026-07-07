@@ -69,6 +69,13 @@ def handle_line(
             "executed": code,
             "error": f"line {line_number}: pi_bridge must be a boolean",
         }
+    stream_console = request.get("stream_console", False)
+    if not isinstance(stream_console, bool):
+        return {
+            "type": "error",
+            "executed": code,
+            "error": f"line {line_number}: stream_console must be a boolean",
+        }
     try:
         return to_json_value(
             store.evaluate(
@@ -79,10 +86,28 @@ def handle_line(
                 pi_request_handler=create_pi_request_handler(stdin, stdout)
                 if pi_bridge
                 else None,
+                console_writer=create_console_writer(stdout) if stream_console else None,
             )
         )
     except Exception as exc:  # noqa: BLE001 - protocol errors are returned to JSONL caller.
         return {"type": "error", "executed": code, "error": str(exc)}
+
+
+def create_console_writer(stdout: TextIO | None):
+    if stdout is None:
+        return None
+
+    def write(stream: str, text: str) -> None:
+        stdout.write(
+            json.dumps(
+                {"type": "console", "stream": stream, "text": text},
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        stdout.flush()
+
+    return write
 
 
 def create_pi_request_handler(stdin: TextIO | None, stdout: TextIO | None):

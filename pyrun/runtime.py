@@ -2239,6 +2239,30 @@ def tail_command_output(result: CommandResult, line_limit: int = 300) -> str:
 
 
 PiRequestHandler = Callable[[str, Any], Any]
+ConsoleWriter = Callable[[str, str], None]
+
+
+class StreamingConsole(io.TextIOBase):
+    def __init__(self, stream: str, buffer: io.StringIO, on_write: ConsoleWriter | None) -> None:
+        self._buffer = buffer
+        self._pending = ""
+        self._stream = stream
+        self._on_write = on_write
+
+    def write(self, text: str) -> int:
+        self._buffer.write(text)
+        self._pending += text
+        if "\n" in self._pending:
+            self.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        if self._pending and self._on_write is not None:
+            self._on_write(self._stream, self._pending)
+        self._pending = ""
+
+    def writable(self) -> bool:
+        return True
 
 
 class PiFooter:
@@ -2352,14 +2376,21 @@ class SessionStore:
         pi: Any | None = None,
         pi_bridge: bool = False,
         pi_request_handler: PiRequestHandler | None = None,
+        console_writer: ConsoleWriter | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
         console = io.StringIO()
+        stdout = StreamingConsole("stdout", console, console_writer)
+        stderr = StreamingConsole("stderr", console, console_writer)
         pi_global = self._build_pi_global(pi, pi_bridge, pi_request_handler)
         try:
-            with contextlib.redirect_stdout(console), contextlib.redirect_stderr(console):
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 value = evaluate_python(code, session.build_globals(pi_global))
+                stdout.flush()
+                stderr.flush()
         except ApprovalRequired as exc:
+            stdout.flush()
+            stderr.flush()
             return {
                 "type": "needs_approval",
                 "executed": code,

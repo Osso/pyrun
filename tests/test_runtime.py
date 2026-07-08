@@ -47,6 +47,30 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(changed, tmp)
         self.assertEqual(other, os.getcwd())
 
+    def test_os_chdir_updates_session_cwd_for_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self.eval(
+                "import os\n"
+                f"os.chdir({tmp!r})\n"
+                "[host.cwd(), os.getcwd(), run.python3('-c', 'import os; print(os.getcwd())').text().strip()]"
+            )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], [tmp, tmp, tmp])
+
+    def test_os_chdir_is_session_local(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            changed = self.eval(
+                "import os\n"
+                f"os.chdir({tmp!r})\n"
+                "os.getcwd()",
+                session_id="a",
+            )["value"]
+            other = self.eval("import os\nos.getcwd()", session_id="b")["value"]
+
+        self.assertEqual(changed, tmp)
+        self.assertEqual(other, os.getcwd())
+
     def test_fs_read_write_exists_remove_and_glob_use_session_cwd(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.eval(f"host.cd({tmp!r})")

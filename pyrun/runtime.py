@@ -1420,6 +1420,29 @@ def resolve_session_path(session: Session, path: str | os.PathLike[str]) -> Path
     return candidate.resolve()
 
 
+@contextlib.contextmanager
+def session_local_os_cwd(session: Session):
+    original_chdir = os.chdir
+    original_getcwd = os.getcwd
+
+    def chdir(path: str | os.PathLike[str]) -> None:
+        resolved = resolve_session_path(session, path)
+        if not resolved.is_dir():
+            raise NotADirectoryError(str(resolved))
+        session.cwd = resolved
+
+    def getcwd() -> str:
+        return str(session.cwd)
+
+    os.chdir = chdir
+    os.getcwd = getcwd
+    try:
+        yield
+    finally:
+        os.chdir = original_chdir
+        os.getcwd = original_getcwd
+
+
 def format_path(path: Path, cwd: Path, absolute: bool) -> str:
     resolved = path.resolve()
     if absolute:
@@ -2384,7 +2407,11 @@ class SessionStore:
         stderr = StreamingConsole("stderr", console, console_writer)
         pi_global = self._build_pi_global(pi, pi_bridge, pi_request_handler)
         try:
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with (
+                contextlib.redirect_stdout(stdout),
+                contextlib.redirect_stderr(stderr),
+                session_local_os_cwd(session),
+            ):
                 value = evaluate_python(code, session.build_globals(pi_global))
                 stdout.flush()
                 stderr.flush()

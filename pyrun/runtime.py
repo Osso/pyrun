@@ -2223,13 +2223,46 @@ class CommandNamespace:
         return command
 
     def command(
-        self, program: object, *args: object, timeout: float | None = None
+        self,
+        program: object,
+        *args: object,
+        cwd: str | os.PathLike[str] | None = None,
+        timeout: float | None = None,
     ) -> CommandBuilder | CommandResult:
-        builder = CommandBuilder(self._session, str(program))(*args)
+        builder = self._build_command(program, args, cwd=cwd, timeout=timeout)
         if self._immediate:
-            return ImmediateCommand(self._session, builder)(timeout=timeout)
+            return ImmediateCommand(self._session, builder)()
+        return builder
+
+    def cmd(
+        self,
+        program: object,
+        *args: object,
+        cwd: str | os.PathLike[str] | None = None,
+        timeout: float | None = None,
+    ) -> CommandBuilder | CommandResult:
+        return self.command(program, *args, cwd=cwd, timeout=timeout)
+
+    def _build_command(
+        self,
+        program: object,
+        args: tuple[object, ...],
+        *,
+        cwd: str | os.PathLike[str] | None,
+        timeout: float | None,
+    ) -> CommandBuilder:
+        if isinstance(program, (list, tuple)):
+            if args:
+                raise TypeError("argv list form does not accept additional arguments")
+            if not program:
+                raise ValueError("argv list must include a program")
+            builder = CommandBuilder(self._session, str(program[0]))(*program[1:])
+        else:
+            builder = CommandBuilder(self._session, str(program))(*args)
+        if cwd is not None:
+            builder = builder.in_(cwd)
         if timeout is not None:
-            return builder.timeout(timeout)
+            builder = builder.timeout(timeout)
         return builder
 
     def history(self) -> list[CommandResult]:
@@ -2247,8 +2280,18 @@ class ImmediateCommand:
         self._session = session
         self._command = command
 
-    def __call__(self, *args: object, timeout: float | None = None) -> CommandResult:
-        result = self._command(*args).run(timeout=timeout)
+    def __call__(
+        self,
+        *args: object,
+        cwd: str | os.PathLike[str] | None = None,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        command = self._command(*args)
+        if cwd is not None:
+            command = command.in_(cwd)
+        if timeout is not None:
+            command = command.timeout(timeout)
+        result = command.run()
         self._session.command_history.append(result)
         sys.stdout.write(tail_command_output(result))
         sys.stdout.flush()

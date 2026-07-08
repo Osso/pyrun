@@ -429,10 +429,37 @@ d.cleanup()
         self.assertEqual(result["stderr"], "")
         self.assertEqual(result["exit_code"], 0)
 
+    def test_run_cmd_alias_executes_argv_list_with_cwd(self):
+        result = self.eval(
+            "run.cmd(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')"
+        )["value"]
+
+        self.assertEqual(result["stdout"], "/tmp\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_run_command_executes_argv_list_with_cwd(self):
+        result = self.eval(
+            "run.command(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')"
+        )["value"]
+
+        self.assertEqual(result["stdout"], "/tmp\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
     def test_run_namespace_accepts_timeout_for_immediate_commands(self):
         result = self.eval("run.python3('-c', 'print(789)', timeout=5)")["value"]
 
         self.assertEqual(result["stdout"], "789\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_run_namespace_accepts_cwd_for_immediate_commands(self):
+        result = self.eval(
+            "run.python3('-c', 'import pathlib; print(pathlib.Path.cwd())', cwd='/tmp')"
+        )["value"]
+
+        self.assertEqual(result["stdout"], "/tmp\n")
         self.assertEqual(result["stderr"], "")
         self.assertEqual(result["exit_code"], 0)
 

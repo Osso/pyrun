@@ -258,6 +258,16 @@ run.python3('-c', 'print(123)').lines()
 run.python3('-c', 'import json; print(json.dumps({"ok": True}))').json()
 ```
 
+You can also call `run.command(...)` or the alias `run.cmd(...)` to pass an argv-style
+list and optional `cwd` explicitly. For example:
+
+```python
+run.command(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')
+run.cmd(['git', 'status'], cwd='/repo')
+```
+
+Immediate helpers like `run.python3(..., cwd='/tmp')` also accept a `cwd` keyword to run
+that single invocation under a different working directory.
 Do not rerun a command just to recover output hidden by the 300-line display cap.
 Use the existing `CommandResult` instead:
 

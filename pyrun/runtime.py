@@ -1940,6 +1940,17 @@ class CommandBuilder:
             upstream_results=upstream_results,
         )
 
+    def run_forwarded(self, timeout: float | None = None) -> CommandResult:
+        self._require_approval()
+        stdin, upstream_results = self._resolve_stdin()
+        completed = self._run_forwarded(stdin, timeout=self._effective_timeout(timeout))
+        return CommandResult(
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+            exit_code=completed.returncode,
+            upstream_results=upstream_results,
+        )
+
     def _run_streaming(
         self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
@@ -2002,6 +2013,16 @@ class CommandBuilder:
             stdout="".join(stdout_chunks),
             stderr="" if merge_stderr else "".join(stderr_chunks),
         )
+
+    def _run_forwarded(
+        self, stdin: str | None, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        completed = self._run_streaming(stdin, merge_stderr=False, timeout=timeout)
+        sys.stdout.write(completed.stdout)
+        sys.stdout.flush()
+        sys.stderr.write(completed.stderr)
+        sys.stderr.flush()
+        return completed
 
     def _require_approval(self) -> None:
         self.session.require_approval(
@@ -2228,7 +2249,7 @@ class CommandNamespace:
         *args: object,
         cwd: str | os.PathLike[str] | None = None,
         timeout: float | None = None,
-    ) -> CommandBuilder | CommandResult:
+    ) -> CommandBuilder | int:
         builder = self._build_command(program, args, cwd=cwd, timeout=timeout)
         if self._immediate:
             return ImmediateCommand(self._session, builder)()
@@ -2240,7 +2261,7 @@ class CommandNamespace:
         *args: object,
         cwd: str | os.PathLike[str] | None = None,
         timeout: float | None = None,
-    ) -> CommandBuilder | CommandResult:
+    ) -> CommandBuilder | int:
         return self.command(program, *args, cwd=cwd, timeout=timeout)
 
     def _build_command(
@@ -2285,23 +2306,15 @@ class ImmediateCommand:
         *args: object,
         cwd: str | os.PathLike[str] | None = None,
         timeout: float | None = None,
-    ) -> CommandResult:
+    ) -> int:
         command = self._command(*args)
         if cwd is not None:
             command = command.in_(cwd)
         if timeout is not None:
             command = command.timeout(timeout)
-        result = command.run()
+        result = command.run_forwarded()
         self._session.command_history.append(result)
-        sys.stdout.write(tail_command_output(result))
-        sys.stdout.flush()
-        return result
-
-
-def tail_command_output(result: CommandResult, line_limit: int = 300) -> str:
-    text_output = result.stdout + result.stderr
-    lines = text_output.splitlines(keepends=True)
-    return "".join(lines[-line_limit:])
+        return result.exit_code
 
 
 PiRequestHandler = Callable[[str, Any], Any]

@@ -64,7 +64,7 @@ class JsonlProtocolTests(unittest.TestCase):
         builder, stream, command_result, http_builder, wrapped = result["value"]
         self.assertEqual(builder["program"], "python3")
         self.assertEqual(stream["stream"], "stdout")
-        self.assertEqual(command_result["stdout"], "123\n")
+        self.assertEqual(command_result, 0)
         self.assertEqual(http_builder["url"], "http://example.invalid")
         self.assertEqual(wrapped, {"wrapped": {"a": 1}})
 

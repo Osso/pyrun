@@ -52,7 +52,7 @@ class RuntimeTests(unittest.TestCase):
             result = self.eval(
                 "import os\n"
                 f"os.chdir({tmp!r})\n"
-                "[host.cwd(), os.getcwd(), run.python3('-c', 'import os; print(os.getcwd())').text().strip()]"
+                "[host.cwd(), os.getcwd(), cli.python3('-c', 'import os; print(os.getcwd())').text().strip()]"
             )
 
         self.assertEqual(result["type"], "completed")
@@ -399,7 +399,7 @@ d.cleanup()
     def test_cli_builder_and_run_execute_without_shell(self):
         code = "cli.python3('-c', 'print(123)').run()"
         result = self.eval(code)["value"]
-        text = self.eval("run.python3('-c', 'print(456)').text()")["value"]
+        text = self.eval("cli.python3('-c', 'print(456)').text()")["value"]
 
         self.assertEqual(result["stdout"], "123\n")
         self.assertEqual(result["stderr"], "")
@@ -409,9 +409,7 @@ d.cleanup()
     def test_run_namespace_executes_commands_without_explicit_run(self):
         result = self.eval("run.python3('-c', 'print(789)')")["value"]
 
-        self.assertEqual(result["stdout"], "789\n")
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result, 0)
 
     def test_cli_command_builds_command_from_program_argument(self):
         result = self.eval("cli.command('python3', '-c', 'print(321)').run()")[
@@ -425,43 +423,33 @@ d.cleanup()
     def test_run_command_executes_program_argument_immediately(self):
         result = self.eval("run.command('python3', '-c', 'print(654)')")["value"]
 
-        self.assertEqual(result["stdout"], "654\n")
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result, 0)
 
     def test_run_cmd_alias_executes_argv_list_with_cwd(self):
         result = self.eval(
             "run.cmd(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')"
         )["value"]
 
-        self.assertEqual(result["stdout"], "/tmp\n")
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result, 0)
 
     def test_run_command_executes_argv_list_with_cwd(self):
         result = self.eval(
             "run.command(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')"
         )["value"]
 
-        self.assertEqual(result["stdout"], "/tmp\n")
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result, 0)
 
     def test_run_namespace_accepts_timeout_for_immediate_commands(self):
         result = self.eval("run.python3('-c', 'print(789)', timeout=5)")["value"]
 
-        self.assertEqual(result["stdout"], "789\n")
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result, 0)
 
     def test_run_namespace_accepts_cwd_for_immediate_commands(self):
         result = self.eval(
             "run.python3('-c', 'import pathlib; print(pathlib.Path.cwd())', cwd='/tmp')"
         )["value"]
 
-        self.assertEqual(result["stdout"], "/tmp\n")
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result, 0)
 
     def test_run_namespace_enforces_timeout_for_immediate_commands(self):
         code = "import time; time.sleep(5)"
@@ -481,8 +469,7 @@ d.cleanup()
         result = self.eval(f"run.python3('-c', {code!r})")
 
         self.assertEqual(result["console"], ["OUT", "ERR"])
-        self.assertEqual(result["value"]["stdout"], "OUT\n")
-        self.assertEqual(result["value"]["stderr"], "ERR\n")
+        self.assertEqual(result["value"], 0)
 
     def test_run_namespace_console_shows_only_last_300_lines(self):
         code = "for i in range(305): print(f'line-{i}')"
@@ -492,7 +479,7 @@ d.cleanup()
         self.assertEqual(len(result["console"]), 300)
         self.assertEqual(result["console"][0], "line-5")
         self.assertEqual(result["console"][-1], "line-304")
-        self.assertIn("line-0\n", result["value"]["stdout"])
+        self.assertEqual(result["value"], 0)
 
     def test_run_namespace_keeps_full_previous_run_logs(self):
         self.eval("run.python3('-c', 'print(\"saved-out\")')")
@@ -502,9 +489,9 @@ d.cleanup()
         self.assertEqual(result["value"], "saved-out\n")
 
     def test_command_result_helpers(self):
-        lines = self.eval("run.python3('-c', 'print(1); print(2)').lines()")["value"]
+        lines = self.eval("cli.python3('-c', 'print(1); print(2)').lines()")["value"]
         data = self.eval(
-            "run.python3('-c', 'import json; print(json.dumps({\"a\": 1}))').json()"
+            "cli.python3('-c', 'import json; print(json.dumps({\"a\": 1}))').json()"
         )["value"]
         returncode = self.eval("cli.python3('-c', 'print(1)').run().returncode")["value"]
 

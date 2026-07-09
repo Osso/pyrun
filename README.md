@@ -57,6 +57,16 @@ Invalid JSON, non-object requests, missing/non-string `code`, and non-string
 command builders, command streams, command results, HTTP request/response
 objects, bytes, and `hr(...)` wrappers are converted to JSON-compatible values.
 
+### Pi bridge
+
+When a host enables the Pi bridge, `pi.models.set(provider, model_id, thinking_level=None)` switches the active Pi session to an authenticated model. It returns the selected model metadata and requested thinking level. `thinking_level` may be `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`; Pi clamps it to model capabilities.
+
+```python
+pi.models.set("openai-codex", "gpt-5.6-terra", "medium")
+```
+
+`pi.models.scoped()` lists the current session's configured model scope.
+
 ### MCP stdio server
 
 `pyrun` also exposes a minimal MCP stdio server:

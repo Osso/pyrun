@@ -2392,6 +2392,14 @@ class PiModels:
     def scoped(self) -> Any:
         return self._request_handler("models.scoped", None)
 
+    def set(
+        self, provider: str, model_id: str, thinking_level: str | None = None
+    ) -> Any:
+        params: dict[str, str] = {"provider": provider, "id": model_id}
+        if thinking_level is not None:
+            params["thinkingLevel"] = thinking_level
+        return self._request_handler("models.set", params)
+
 
 class PiTools:
     def __init__(self, request_handler: PiRequestHandler) -> None:

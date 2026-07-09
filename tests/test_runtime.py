@@ -194,6 +194,33 @@ helper_using_subprocess.run_child()
         self.assertEqual(result["type"], "completed")
         self.assertEqual(result["value"], "123")
 
+    def test_pi_models_set_bridge_requests_model_and_optional_thinking_level(self):
+        handled = []
+
+        result = self.store.evaluate(
+            "[pi.models.set('openai-codex', 'gpt-5.6-terra'), pi.models.set('openai-codex', 'gpt-5.6-sol', 'medium')]",
+            pi={},
+            pi_bridge=True,
+            pi_request_handler=lambda method, params: handled.append((method, params)) or {"switched": True},
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], [{"switched": True}, {"switched": True}])
+        self.assertEqual(
+            handled,
+            [
+                ("models.set", {"provider": "openai-codex", "id": "gpt-5.6-terra"}),
+                (
+                    "models.set",
+                    {
+                        "provider": "openai-codex",
+                        "id": "gpt-5.6-sol",
+                        "thinkingLevel": "medium",
+                    },
+                ),
+            ],
+        )
+
     def test_pi_web_search_bridge_requests_query(self):
         handled = []
 

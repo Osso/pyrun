@@ -514,6 +514,43 @@ d.cleanup()
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, f"{tmp}\n")
 
+    def test_command_builder_without_input_closes_child_stdin(self):
+        read_fd, write_fd = os.pipe()
+        original_stdin = os.dup(0)
+        try:
+            os.dup2(read_fd, 0)
+            result = CommandBuilder(Session(), sys.executable)(
+                "-c",
+                "import sys; sys.stdout.write(sys.stdin.read())",
+            ).run(timeout=0.1)
+        finally:
+            os.dup2(original_stdin, 0)
+            os.close(original_stdin)
+            os.close(read_fd)
+            os.close(write_fd)
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout, "")
+
+    def test_spawn_without_input_closes_child_stdin(self):
+        read_fd, write_fd = os.pipe()
+        original_stdin = os.dup(0)
+        try:
+            os.dup2(read_fd, 0)
+            process = CommandBuilder(Session(), sys.executable)(
+                "-c",
+                "import sys; sys.stdout.write(sys.stdin.read())",
+            ).spawn()
+            result = process.wait(timeout=0.1)
+        finally:
+            os.dup2(original_stdin, 0)
+            os.close(original_stdin)
+            os.close(read_fd)
+            os.close(write_fd)
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout, "")
+
     def test_command_builder_stdin_text_passes_stdin_to_command(self):
         result = (
             CommandBuilder(Session(), sys.executable)(

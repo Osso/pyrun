@@ -1910,7 +1910,7 @@ class CommandBuilder:
         stdin, upstream_results = self._resolve_stdin()
         process = subprocess.Popen(
             [self.program, *self.args],
-            stdin=subprocess.PIPE if stdin is not None else None,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -1956,7 +1956,7 @@ class CommandBuilder:
     ) -> subprocess.CompletedProcess[str]:
         process = subprocess.Popen(
             [self.program, *self.args],
-            stdin=subprocess.PIPE if stdin is not None else None,
+            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
             text=True,

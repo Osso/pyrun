@@ -2039,7 +2039,12 @@ class CommandBuilder:
         return result
 
     def _run_streaming(
-        self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
+        self,
+        stdin: str | None,
+        merge_stderr: bool,
+        timeout: float | None = None,
+        on_stdout_chunk: Callable[[str], None] | None = None,
+        on_stderr_chunk: Callable[[str], None] | None = None,
     ) -> tuple[subprocess.CompletedProcess[str], OSError | None]:
         output_file: io.TextIOWrapper | None = None
         output_errors: list[OSError] = []
@@ -2069,6 +2074,7 @@ class CommandBuilder:
                 stream: io.TextIOBase | None,
                 sink: list[str],
                 output: io.TextIOWrapper | None = None,
+                on_chunk: Callable[[str], None] | None = None,
             ) -> None:
                 if stream is None:
                     return
@@ -2082,6 +2088,8 @@ class CommandBuilder:
                             except OSError as error:
                                 output_errors.append(error)
                                 output = None
+                        if on_chunk is not None:
+                            on_chunk(chunk)
                 finally:
                     stream.close()
 
@@ -2089,14 +2097,16 @@ class CommandBuilder:
             if process.stdout is not None:
                 thread = threading.Thread(
                     target=pump,
-                    args=(process.stdout, stdout_chunks, output_file),
+                    args=(process.stdout, stdout_chunks, output_file, on_stdout_chunk),
                     daemon=True,
                 )
                 thread.start()
                 threads.append(thread)
             if not merge_stderr and process.stderr is not None:
                 thread = threading.Thread(
-                    target=pump, args=(process.stderr, stderr_chunks), daemon=True
+                    target=pump,
+                    args=(process.stderr, stderr_chunks, None, on_stderr_chunk),
+                    daemon=True,
                 )
                 thread.start()
                 threads.append(thread)
@@ -2135,13 +2145,20 @@ class CommandBuilder:
     def _run_forwarded(
         self, stdin: str | None, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
+        def forward(writer: Any) -> Callable[[str], None]:
+            def write(chunk: str) -> None:
+                writer.write(chunk)
+                writer.flush()
+
+            return write
+
         completed, output_error = self._run_streaming(
-            stdin, merge_stderr=False, timeout=timeout
+            stdin,
+            merge_stderr=False,
+            timeout=timeout,
+            on_stdout_chunk=forward(sys.stdout),
+            on_stderr_chunk=forward(sys.stderr),
         )
-        sys.stdout.write(completed.stdout)
-        sys.stdout.flush()
-        sys.stderr.write(completed.stderr)
-        sys.stderr.flush()
         if output_error is not None:
             raise output_error
         return completed

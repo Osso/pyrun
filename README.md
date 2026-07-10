@@ -11,13 +11,27 @@ execution. PyYAML is third-party; it is not part of Python's standard library.
 
 ## Usage
 
-Run code through the JSONL adapter:
+`pyrun-jsonl` is a stdin JSONL server, not an interactive Python shell.
+
+```sh
+pyrun-jsonl --help
+# Prints usage and exits 0.
+
+pyrun-jsonl
+# When run from an interactive terminal, prints usage to stderr and exits 0.
+```
+
+When standard input is piped or redirected, it remains the JSONL server. Run
+code through the adapter:
 
 ```sh
 printf '%s\n' \
   '{"session_id":"s","code":"ctx.count = 41"}' \
   '{"session_id":"s","code":"ctx.count += 1\nctx.count"}' |
-  python -m pyrun.jsonl
+  pyrun-jsonl
+
+# Equivalent module invocation:
+# ... | python -m pyrun.jsonl
 ```
 
 ### JSONL protocol

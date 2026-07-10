@@ -7,8 +7,35 @@ from typing import Any, TextIO
 from .runtime import SessionStore, to_json_value
 
 
-def main() -> int:
-    return run_jsonl(sys.stdin, sys.stdout, sys.stderr)
+USAGE = "usage: pyrun-jsonl [--help]\n"
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    stdin: TextIO | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    input_stream = sys.stdin if stdin is None else stdin
+    output_stream = sys.stdout if stdout is None else stdout
+    error_stream = sys.stderr if stderr is None else stderr
+
+    if args == ["--help"] or args == ["-h"]:
+        output_stream.write(USAGE)
+        output_stream.write("Read Pyrun evaluation requests as JSONL from standard input.\n")
+        return 0
+    if args:
+        error_stream.write(USAGE)
+        error_stream.write(f"pyrun-jsonl: unrecognized argument: {args[0]}\n")
+        return 2
+    if input_stream.isatty():
+        error_stream.write(USAGE)
+        error_stream.write("pyrun-jsonl expects JSONL on standard input.\n")
+        return 0
+
+    return run_jsonl(input_stream, output_stream, error_stream)
 
 
 def run_jsonl(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> int:

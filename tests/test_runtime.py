@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -489,7 +490,7 @@ d.cleanup()
     def test_run_namespace_surfaces_stdout_and_stderr(self):
         code = (
             "import sys; "
-            "print('OUT'); "
+            "print('OUT', flush=True); "
             "print('ERR', file=sys.stderr)"
         )
 
@@ -540,6 +541,69 @@ d.cleanup()
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, f"{tmp}\n")
+
+    def test_command_builder_output_opens_before_spawn_and_tees_stdout_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp, "stdout.txt")
+            code = (
+                "import pathlib, time; "
+                f"path = pathlib.Path({str(output_path)!r}); "
+                "print(path.exists(), flush=True); "
+                "print('first', flush=True); "
+                "time.sleep(0.15); "
+                "print(path.read_text() == 'True\\nfirst\\n', flush=True); "
+                "time.sleep(0.05)"
+            )
+            result = (
+                CommandBuilder(Session(cwd=Path(tmp)), sys.executable)("-c", code)
+                .output("stdout.txt")
+                .run()
+            )
+
+            output = output_path.read_text()
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "True\nfirst\nTrue\n")
+        self.assertEqual(output, result.stdout)
+
+    def test_command_builder_run_forwarded_forwards_chunks_before_process_exit(self):
+        class RecordingStream:
+            def __init__(self):
+                self.events = []
+
+            def write(self, text):
+                self.events.append((text, time.monotonic()))
+                return len(text)
+
+            def flush(self):
+                return None
+
+        stdout = RecordingStream()
+        stderr = RecordingStream()
+        code = (
+            "import sys, time; "
+            "print('out', flush=True); "
+            "print('err', file=sys.stderr, flush=True); "
+            "time.sleep(0.15)"
+        )
+        original_stdout, original_stderr = sys.stdout, sys.stderr
+        started = time.monotonic()
+        try:
+            sys.stdout, sys.stderr = stdout, stderr
+            result = CommandBuilder(Session(), sys.executable)("-c", code).run_forwarded()
+            finished = time.monotonic()
+        finally:
+            sys.stdout, sys.stderr = original_stdout, original_stderr
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stdout, "out\n")
+        self.assertEqual(result.stderr, "err\n")
+        self.assertTrue(stdout.events)
+        self.assertTrue(stderr.events)
+        self.assertLess(min(timestamp for _, timestamp in stdout.events), finished - 0.1)
+        self.assertLess(min(timestamp for _, timestamp in stderr.events), finished - 0.1)
+        self.assertGreaterEqual(finished - started, 0.1)
 
     def test_command_builder_stdin_text_passes_stdin_to_command(self):
         result = (

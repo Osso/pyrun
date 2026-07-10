@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import base64
 import builtins
+import codecs
 import contextlib
 import csv
 import fnmatch
@@ -12,12 +13,14 @@ import itertools
 import json
 import os
 import re
+import selectors
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1781,6 +1784,7 @@ class CommandBuilder:
     stdin_source: CommandStream | CommandResult | None = None
     inherit_env: bool = True
     timeout_seconds: float | None = None
+    output_path: Path | None = None
 
     def __call__(self, *args: object) -> CommandBuilder:
         return self._copy(args=self.args + tuple(str(arg) for arg in args))
@@ -1811,6 +1815,9 @@ class CommandBuilder:
 
     def stderr_stream(self) -> CommandStream:
         return self.stream("stderr")
+
+    def output(self, path: str | os.PathLike[str]) -> CommandBuilder:
+        return self._copy(output_path=self._resolve(path))
 
     def stdin_text(self, text: str) -> CommandBuilder:
         return self._copy(stdin=text, stdin_source=None)
@@ -1878,9 +1885,7 @@ class CommandBuilder:
         return self._run(merge_stderr=True, timeout=self._effective_timeout(timeout)).stdout
 
     def to_file(self, path: str | os.PathLike[str]) -> CommandResult:
-        result = self.run()
-        write_text_file(self._resolve(path), result.stdout)
-        return result
+        return self.output(path).run()
 
     def stderr_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
         result = self.run()
@@ -1952,77 +1957,218 @@ class CommandBuilder:
         )
 
     def _run_streaming(
-        self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
+        self,
+        stdin: str | None,
+        merge_stderr: bool,
+        timeout: float | None = None,
+        on_stdout_chunk: Callable[[str], None] | None = None,
+        on_stderr_chunk: Callable[[str], None] | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        process = subprocess.Popen(
-            [self.program, *self.args],
-            stdin=subprocess.PIPE if stdin is not None else None,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
-            text=True,
-            cwd=self.cwd or self.session.cwd,
-            env=self._subprocess_env(),
-            shell=False,
-        )
-        if stdin is not None and process.stdin is not None:
-            process.stdin.write(stdin)
-            process.stdin.close()
+        output_file: io.TextIOWrapper | None = None
+        if self.output_path is not None:
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_file = self.output_path.open("w", encoding="utf-8")
 
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
-
-        def pump(stream: io.TextIOBase | None, sink: list[str]) -> None:
-            if stream is None:
+        def write_output(chunk: str) -> None:
+            if output_file is None:
                 return
-            for chunk in iter(lambda: stream.read(1), ""):
-                sink.append(chunk)
-            stream.close()
+            output_file.write(chunk)
+            output_file.flush()
 
-        threads: list[threading.Thread] = []
-        if process.stdout is not None:
-            thread = threading.Thread(
-                target=pump, args=(process.stdout, stdout_chunks), daemon=True
-            )
-            thread.start()
-            threads.append(thread)
-        if not merge_stderr and process.stderr is not None:
-            thread = threading.Thread(
-                target=pump, args=(process.stderr, stderr_chunks), daemon=True
-            )
-            thread.start()
-            threads.append(thread)
-        command = [self.program, *self.args]
+        def stdout_chunk(chunk: str) -> None:
+            write_output(chunk)
+            on_stdout_chunk and on_stdout_chunk(chunk)
+
+        def stderr_chunk(chunk: str) -> None:
+            on_stderr_chunk and on_stderr_chunk(chunk)
+
         try:
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            returncode = process.wait()
+            process = subprocess.Popen(
+                [self.program, *self.args],
+                stdin=subprocess.PIPE if stdin is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+                text=True,
+                cwd=self.cwd or self.session.cwd,
+                env=self._subprocess_env(),
+                shell=False,
+            )
+            if stdin is not None and process.stdin is not None:
+                process.stdin.write(stdin)
+                process.stdin.close()
+
+            stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
+
+            def pump(
+                stream: io.TextIOBase | None,
+                sink: list[str],
+                on_chunk: Callable[[str], None] | None = None,
+            ) -> None:
+                if stream is None:
+                    return
+                for chunk in iter(lambda: stream.read(1), ""):
+                    sink.append(chunk)
+                    if on_chunk is not None:
+                        on_chunk(chunk)
+                stream.close()
+
+            threads: list[threading.Thread] = []
+            if process.stdout is not None:
+                thread = threading.Thread(
+                    target=pump,
+                    args=(process.stdout, stdout_chunks, stdout_chunk),
+                    daemon=True,
+                )
+                thread.start()
+                threads.append(thread)
+            if not merge_stderr and process.stderr is not None:
+                thread = threading.Thread(
+                    target=pump,
+                    args=(process.stderr, stderr_chunks, stderr_chunk),
+                    daemon=True,
+                )
+                thread.start()
+                threads.append(thread)
+            command = [self.program, *self.args]
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                returncode = process.wait()
+                for thread in threads:
+                    thread.join()
+                raise subprocess.TimeoutExpired(
+                    command,
+                    exc.timeout,
+                    output="".join(stdout_chunks),
+                    stderr="" if merge_stderr else "".join(stderr_chunks),
+                ) from exc
             for thread in threads:
                 thread.join()
-            raise subprocess.TimeoutExpired(
-                command,
-                exc.timeout,
-                output="".join(stdout_chunks),
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=returncode,
+                stdout="".join(stdout_chunks),
                 stderr="" if merge_stderr else "".join(stderr_chunks),
-            ) from exc
-        for thread in threads:
-            thread.join()
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=returncode,
-            stdout="".join(stdout_chunks),
-            stderr="" if merge_stderr else "".join(stderr_chunks),
-        )
+            )
+        finally:
+            if output_file is not None:
+                output_file.close()
 
     def _run_forwarded(
         self, stdin: str | None, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
-        completed = self._run_streaming(stdin, merge_stderr=False, timeout=timeout)
-        sys.stdout.write(completed.stdout)
-        sys.stdout.flush()
-        sys.stderr.write(completed.stderr)
-        sys.stderr.flush()
-        return completed
+        output_file: io.TextIOWrapper | None = None
+        if self.output_path is not None:
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_file = self.output_path.open("w", encoding="utf-8")
+
+        def emit_chunk(chunk: str, chunks: list[str], writer: Any) -> None:
+            if not chunk:
+                return
+            chunks.append(chunk)
+            if writer is sys.stdout and output_file is not None:
+                output_file.write(chunk)
+                output_file.flush()
+            writer.write(chunk)
+            writer.flush()
+
+        def read_stream(
+            selector: selectors.BaseSelector,
+            key: selectors.SelectorKey,
+            chunks: list[str],
+            writer: Any,
+            decoder: codecs.IncrementalDecoder,
+        ) -> None:
+            stream = key.fileobj
+            raw_chunk = os.read(stream.fileno(), 4096)
+            if raw_chunk == b"":
+                selector.unregister(stream)
+                emit_chunk(decoder.decode(b"", final=True), chunks, writer)
+                stream.close()
+                return
+            emit_chunk(decoder.decode(raw_chunk), chunks, writer)
+
+        try:
+            process = subprocess.Popen(
+                [self.program, *self.args],
+                stdin=subprocess.PIPE if stdin is not None else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=False,
+                cwd=self.cwd or self.session.cwd,
+                env=self._subprocess_env(),
+                shell=False,
+            )
+            if stdin is not None and process.stdin is not None:
+                process.stdin.write(stdin.encode())
+                process.stdin.close()
+
+            stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
+            selector = selectors.DefaultSelector()
+            if process.stdout is not None:
+                selector.register(process.stdout, selectors.EVENT_READ, sys.stdout)
+            if process.stderr is not None:
+                selector.register(process.stderr, selectors.EVENT_READ, sys.stderr)
+            keys = {process.stdout: stdout_chunks, process.stderr: stderr_chunks}
+            writers = {process.stdout: sys.stdout, process.stderr: sys.stderr}
+            decoders = {
+                process.stdout: codecs.getincrementaldecoder("utf-8")(),
+                process.stderr: codecs.getincrementaldecoder("utf-8")(),
+            }
+            command = [self.program, *self.args]
+            deadline = None if timeout is None else time.monotonic() + timeout
+            timed_out = False
+            while selector.get_map():
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    timed_out = True
+                    process.kill()
+                    process.wait()
+                    break
+                ready = selector.select(remaining)
+                if not ready:
+                    timed_out = True
+                    process.kill()
+                    process.wait()
+                    break
+                for key, _ in sorted(ready, key=lambda item: 0 if item[0].fileobj is process.stdout else 1):
+                    read_stream(
+                        selector,
+                        key,
+                        keys[key.fileobj],
+                        writers[key.fileobj],
+                        decoders[key.fileobj],
+                    )
+
+            while selector.get_map():
+                for key, _ in selector.select():
+                    read_stream(
+                        selector,
+                        key,
+                        keys[key.fileobj],
+                        writers[key.fileobj],
+                        decoders[key.fileobj],
+                    )
+            selector.close()
+            if timed_out:
+                raise subprocess.TimeoutExpired(
+                    command,
+                    timeout,
+                    output="".join(stdout_chunks),
+                    stderr="".join(stderr_chunks),
+                )
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=process.wait(),
+                stdout="".join(stdout_chunks),
+                stderr="".join(stderr_chunks),
+            )
+        finally:
+            if output_file is not None:
+                output_file.close()
 
     def _require_approval(self) -> None:
         self.session.require_approval(
@@ -2060,6 +2206,7 @@ class CommandBuilder:
             "stdin_source": self.stdin_source,
             "inherit_env": self.inherit_env,
             "timeout_seconds": self.timeout_seconds,
+            "output_path": self.output_path,
         }
         values.update(changes)
         return CommandBuilder(**values)

@@ -1,3 +1,4 @@
+import io
 import json
 import subprocess
 import sys
@@ -5,8 +6,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from pyrun.jsonl import handle_line
+from pyrun.jsonl import handle_line, main
 from pyrun.runtime import SessionStore
+
+
+class InteractiveInput(io.StringIO):
+    def isatty(self):
+        return True
 
 
 class JsonlProtocolTests(unittest.TestCase):
@@ -15,6 +21,29 @@ class JsonlProtocolTests(unittest.TestCase):
 
     def handle(self, line):
         return handle_line(self.store, line, 7)
+
+    def test_help_prints_usage_without_reading_stdin(self):
+        stdin = InteractiveInput('{"code":"raise RuntimeError()"}\n')
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        exit_code = main(["--help"], stdin=stdin, stdout=stdout, stderr=stderr)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("usage: pyrun-jsonl", stdout.getvalue())
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(stdin.tell(), 0)
+
+    def test_interactive_invocation_prints_usage_and_exits(self):
+        stdin = InteractiveInput()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        exit_code = main([], stdin=stdin, stdout=stdout, stderr=stderr)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("usage: pyrun-jsonl", stderr.getvalue())
+        self.assertIn("expects JSONL on standard input", stderr.getvalue())
 
     def test_invalid_json_reports_line_number(self):
         response = self.handle("not-json")

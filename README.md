@@ -300,7 +300,9 @@ consumer.stdin_from(stderr_producer.stderr_stream()).run()
 `env(name, value)` and `env(dict)` add or override environment variables.
 Commands inherit `os.environ` by default. Use `env_inherit(False)` or
 `env_clear()` to run with only explicit overrides, or an empty environment when
-no overrides are set.
+no overrides are set. Commands without an explicit stdin source receive EOF;
+they never inherit Pyrun's JSONL/MCP protocol input stream. Use
+`.stdin_text(...)` or another stdin helper when input is required.
 
 `stdin_from(source, stream='stdout')` accepts another `CommandBuilder`, a
 `CommandStream` from `.stream()`, `.stdout_stream()`, or `.stderr_stream()`, an

@@ -673,10 +673,13 @@ class Tools:
             self._session,
             "authsudo",
             (command.program, *command.args),
-            cwd=command.cwd,
+            working_dir=command.working_dir,
             stdin=command.stdin,
             env_overrides=command.env_overrides,
+            stdin_source=command.stdin_source,
             inherit_env=command.inherit_env,
+            timeout_seconds=command.timeout_seconds,
+            output_path=command.output_path,
         )
 
     def powershell(
@@ -1405,10 +1408,13 @@ class SshTools:
         builder = CommandBuilder(self._session, program)(*args)
         if source is not None:
             builder = builder._copy(
-                cwd=source.cwd,
+                working_dir=source.working_dir,
                 stdin=source.stdin,
                 env_overrides=source.env_overrides,
+                stdin_source=source.stdin_source,
                 inherit_env=source.inherit_env,
+                timeout_seconds=source.timeout_seconds,
+                output_path=source.output_path,
             )
         return builder
 
@@ -1775,12 +1781,13 @@ class CommandBuilder:
     session: Session
     program: str
     args: tuple[str, ...] = ()
-    cwd: Path | None = None
+    working_dir: Path | None = None
     stdin: str | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     stdin_source: CommandStream | CommandResult | None = None
     inherit_env: bool = True
     timeout_seconds: float | None = None
+    output_path: Path | None = None
 
     def __call__(self, *args: object) -> CommandBuilder:
         return self._copy(args=self.args + tuple(str(arg) for arg in args))
@@ -1788,8 +1795,11 @@ class CommandBuilder:
     def timeout(self, seconds: float | None) -> CommandBuilder:
         return self._copy(timeout_seconds=seconds)
 
+    def cwd(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
+        return self._copy(working_dir=self._resolve(cwd))
+
     def in_(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
-        return self._copy(cwd=self._resolve(cwd))
+        return self.cwd(cwd)
 
     def env(
         self, name_or_values: str | dict[Any, Any], value: object | None = None
@@ -1811,6 +1821,16 @@ class CommandBuilder:
 
     def stderr_stream(self) -> CommandStream:
         return self.stream("stderr")
+
+    def input(
+        self,
+        source: CommandBuilder | CommandStream | CommandResult | str | bytes,
+        stream: str = "stdout",
+    ) -> CommandBuilder:
+        return self.stdin_from(source, stream=stream)
+
+    def output(self, path: str | os.PathLike[str]) -> CommandBuilder:
+        return self._copy(output_path=self._resolve(path))
 
     def stdin_text(self, text: str) -> CommandBuilder:
         return self._copy(stdin=text, stdin_source=None)
@@ -1878,9 +1898,7 @@ class CommandBuilder:
         return self._run(merge_stderr=True, timeout=self._effective_timeout(timeout)).stdout
 
     def to_file(self, path: str | os.PathLike[str]) -> CommandResult:
-        result = self.run()
-        write_text_file(self._resolve(path), result.stdout)
-        return result
+        return self.output(path).run()
 
     def stderr_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
         result = self.run()
@@ -1914,7 +1932,7 @@ class CommandBuilder:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=self.cwd or self.session.cwd,
+            cwd=self.working_dir or self.session.cwd,
             env=self._subprocess_env(),
             shell=False,
         )
@@ -1927,18 +1945,22 @@ class CommandBuilder:
             process=process,
             upstream_results=upstream_results,
             timeout_seconds=self.timeout_seconds,
+            output_path=self.output_path,
         )
 
     def _run(self, merge_stderr: bool, timeout: float | None = None) -> CommandResult:
         self._require_approval()
         stdin, upstream_results = self._resolve_stdin()
         completed = self._run_streaming(stdin, merge_stderr, timeout=timeout)
-        return CommandResult(
+        result = CommandResult(
             stdout=completed.stdout,
             stderr="" if merge_stderr else completed.stderr,
             exit_code=completed.returncode,
             upstream_results=upstream_results,
         )
+        if self.output_path is not None:
+            write_text_file(self.output_path, result.stdout)
+        return result
 
     def run_forwarded(self, timeout: float | None = None) -> CommandResult:
         self._require_approval()
@@ -1960,7 +1982,7 @@ class CommandBuilder:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
             text=True,
-            cwd=self.cwd or self.session.cwd,
+            cwd=self.working_dir or self.session.cwd,
             env=self._subprocess_env(),
             shell=False,
         )
@@ -2031,7 +2053,7 @@ class CommandBuilder:
             {
                 "program": self.program,
                 "args": list(self.args),
-                "cwd": str(self.cwd or self.session.cwd),
+                "cwd": str(self.working_dir or self.session.cwd),
             },
         )
 
@@ -2054,12 +2076,13 @@ class CommandBuilder:
             "session": self.session,
             "program": self.program,
             "args": self.args,
-            "cwd": self.cwd,
+            "working_dir": self.working_dir,
             "stdin": self.stdin,
             "env_overrides": self.env_overrides,
             "stdin_source": self.stdin_source,
             "inherit_env": self.inherit_env,
             "timeout_seconds": self.timeout_seconds,
+            "output_path": self.output_path,
         }
         values.update(changes)
         return CommandBuilder(**values)
@@ -2084,6 +2107,7 @@ class ProcessHandle:
     process: subprocess.Popen[str]
     upstream_results: tuple[CommandResult, ...] = ()
     timeout_seconds: float | None = None
+    output_path: Path | None = None
     _result: CommandResult | None = None
 
     def wait(self, timeout: float | None = None) -> CommandResult:
@@ -2104,6 +2128,7 @@ class ProcessHandle:
                 exit_code=self.process.returncode,
                 upstream_results=self.upstream_results,
             )
+            self._write_output()
             raise subprocess.TimeoutExpired(
                 [self.program, *self.args],
                 exc.timeout,
@@ -2116,7 +2141,12 @@ class ProcessHandle:
             exit_code=self.process.returncode,
             upstream_results=self.upstream_results,
         )
+        self._write_output()
         return self._result
+
+    def _write_output(self) -> None:
+        if self.output_path is not None and self._result is not None:
+            write_text_file(self.output_path, self._result.stdout)
 
     def kill(self) -> bool:
         if self.process.poll() is not None:
@@ -2243,34 +2273,19 @@ class CommandNamespace:
             return ImmediateCommand(self._session, command)
         return command
 
-    def command(
-        self,
-        program: object,
-        *args: object,
-        cwd: str | os.PathLike[str] | None = None,
-        timeout: float | None = None,
-    ) -> CommandBuilder | int:
-        builder = self._build_command(program, args, cwd=cwd, timeout=timeout)
+    def command(self, program: object, *args: object) -> CommandBuilder | int:
+        builder = self._build_command(program, args)
         if self._immediate:
             return ImmediateCommand(self._session, builder)()
         return builder
 
-    def cmd(
-        self,
-        program: object,
-        *args: object,
-        cwd: str | os.PathLike[str] | None = None,
-        timeout: float | None = None,
-    ) -> CommandBuilder | int:
-        return self.command(program, *args, cwd=cwd, timeout=timeout)
+    def cmd(self, program: object, *args: object) -> CommandBuilder | int:
+        return self.command(program, *args)
 
     def _build_command(
         self,
         program: object,
         args: tuple[object, ...],
-        *,
-        cwd: str | os.PathLike[str] | None,
-        timeout: float | None,
     ) -> CommandBuilder:
         if isinstance(program, (list, tuple)):
             if args:
@@ -2280,10 +2295,6 @@ class CommandNamespace:
             builder = CommandBuilder(self._session, str(program[0]))(*program[1:])
         else:
             builder = CommandBuilder(self._session, str(program))(*args)
-        if cwd is not None:
-            builder = builder.in_(cwd)
-        if timeout is not None:
-            builder = builder.timeout(timeout)
         return builder
 
     def history(self) -> list[CommandResult]:
@@ -2301,17 +2312,8 @@ class ImmediateCommand:
         self._session = session
         self._command = command
 
-    def __call__(
-        self,
-        *args: object,
-        cwd: str | os.PathLike[str] | None = None,
-        timeout: float | None = None,
-    ) -> int:
+    def __call__(self, *args: object) -> int:
         command = self._command(*args)
-        if cwd is not None:
-            command = command.in_(cwd)
-        if timeout is not None:
-            command = command.timeout(timeout)
         result = command.run_forwarded()
         self._session.command_history.append(result)
         return result.exit_code
@@ -2649,12 +2651,14 @@ def to_json_value(value: Any) -> Any:
         serialized = {
             "program": value.program,
             "args": list(value.args),
-            "cwd": str(value.cwd) if value.cwd is not None else None,
+            "cwd": str(value.working_dir) if value.working_dir is not None else None,
             "env": to_json_value(value.env_overrides),
             "stdin": value.stdin,
         }
         if value.timeout_seconds is not None:
             serialized["timeout"] = value.timeout_seconds
+        if value.output_path is not None:
+            serialized["output"] = str(value.output_path)
         if value.stdin_source is not None:
             serialized["stdin_from"] = to_json_value(value.stdin_source)
         return serialized

@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from pyrun.runtime import CommandBuilder, Session, SessionStore
+from pyrun.runtime import CommandBuilder, Session, SessionStore, Tools
 
 
 class RuntimeTests(unittest.TestCase):
@@ -452,36 +452,40 @@ d.cleanup()
 
         self.assertEqual(result, 0)
 
-    def test_run_cmd_alias_executes_argv_list_with_cwd(self):
+    def test_run_cmd_alias_rejects_context_kwargs(self):
         result = self.eval(
-            "run.cmd(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')"
-        )["value"]
+            "run.cmd(['python3', '-c', 'print(1)'], cwd='/tmp')"
+        )
 
-        self.assertEqual(result, 0)
+        self.assertEqual(result["type"], "error")
+        self.assertIn("unexpected keyword argument", result["error"])
 
-    def test_run_command_executes_argv_list_with_cwd(self):
+    def test_run_command_rejects_context_kwargs(self):
         result = self.eval(
-            "run.command(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')"
-        )["value"]
+            "run.command(['python3', '-c', 'print(1)'], cwd='/tmp')"
+        )
 
-        self.assertEqual(result, 0)
+        self.assertEqual(result["type"], "error")
+        self.assertIn("unexpected keyword argument", result["error"])
 
-    def test_run_namespace_accepts_timeout_for_immediate_commands(self):
-        result = self.eval("run.python3('-c', 'print(789)', timeout=5)")["value"]
+    def test_run_namespace_rejects_timeout_for_immediate_commands(self):
+        result = self.eval("run.python3('-c', 'print(789)', timeout=5)")
 
-        self.assertEqual(result, 0)
+        self.assertEqual(result["type"], "error")
+        self.assertIn("unexpected keyword argument", result["error"])
 
-    def test_run_namespace_accepts_cwd_for_immediate_commands(self):
+    def test_run_namespace_rejects_cwd_for_immediate_commands(self):
         result = self.eval(
             "run.python3('-c', 'import pathlib; print(pathlib.Path.cwd())', cwd='/tmp')"
-        )["value"]
+        )
 
-        self.assertEqual(result, 0)
+        self.assertEqual(result["type"], "error")
+        self.assertIn("unexpected keyword argument", result["error"])
 
-    def test_run_namespace_enforces_timeout_for_immediate_commands(self):
+    def test_cli_namespace_enforces_chainable_timeout(self):
         code = "import time; time.sleep(5)"
 
-        result = self.eval(f"run.python3('-c', {code!r}, timeout=0.01)")
+        result = self.eval(f"cli.python3('-c', {code!r}).timeout(0.01).run()")
 
         self.assertEqual(result["type"], "error")
         self.assertIn("timed out", result["error"])
@@ -577,6 +581,50 @@ d.cleanup()
 
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.stdout, "")
+
+    def test_command_builder_cwd_alias_is_chainable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c",
+                    "import os; print(os.getcwd())",
+                )
+                .cwd(tmp)
+                .run()
+            )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, f"{tmp}\n")
+
+    def test_command_builder_input_and_output_are_composable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            result = (
+                CommandBuilder(session, sys.executable)(
+                    "-c",
+                    "import sys; sys.stdout.write(sys.stdin.read().upper())",
+                )
+                .input("hello from stdin")
+                .output("stdout.txt")
+                .run()
+            )
+
+            output = Path(tmp, "stdout.txt").read_text()
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "HELLO FROM STDIN")
+        self.assertEqual(output, "HELLO FROM STDIN")
+
+    def test_command_namespace_command_rejects_context_kwargs(self):
+        cwd_result = self.eval("cli.command('python3', cwd='/tmp')")
+        timeout_result = self.eval("cli.command('python3', timeout=1)")
+
+        self.assertEqual(cwd_result["type"], "error")
+        self.assertIn("unexpected keyword argument", cwd_result["error"])
+        self.assertEqual(timeout_result["type"], "error")
+        self.assertIn("unexpected keyword argument", timeout_result["error"])
 
     def test_command_builder_stdin_text_passes_stdin_to_command(self):
         result = (
@@ -753,6 +801,20 @@ d.cleanup()
         self.assertEqual(stderr_tee_result.stdout, "out\n")
         self.assertEqual(combined_tee_result.stdout, "out\nerr\n")
 
+    def test_command_builder_output_applies_to_spawn_wait(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            result = (
+                CommandBuilder(session, sys.executable)("-c", "print('spawned')")
+                .output("spawned.txt")
+                .spawn()
+                .wait(timeout=5)
+            )
+            output = Path(tmp, "spawned.txt").read_text()
+
+        self.assertEqual(result.stdout, "spawned\n")
+        self.assertEqual(output, "spawned\n")
+
     def test_command_builder_spawn_wait_text_json_and_kill(self):
         handle = CommandBuilder(Session(), sys.executable)(
             "-c",
@@ -822,6 +884,11 @@ d.cleanup()
 
         self.assertEqual(value["program"], "python3")
         self.assertEqual(value["timeout"], 5)
+
+    def test_command_builder_output_is_serialized(self):
+        value = self.eval("cli.command('python3').output('/tmp/result.txt')")["value"]
+
+        self.assertEqual(value["output"], "/tmp/result.txt")
 
     def test_command_builder_spawn_wait_uses_builder_timeout(self):
         with self.assertRaises(subprocess.TimeoutExpired):
@@ -994,6 +1061,28 @@ d.cleanup()
             value[7]["args"], ["send-keys", "-t", "pyrun-test", "echo hi", "Enter"]
         )
         self.assertEqual(value[8]["args"], ["capture-pane", "-p", "-t", "pyrun-test"])
+
+    def test_sudo_and_ssh_wrappers_preserve_builder_context(self):
+        session = Session()
+        producer = CommandBuilder(session, sys.executable)("-c", "print('input')")
+        source = (
+            CommandBuilder(session, "echo")("hello")
+            .cwd("/tmp")
+            .input(producer)
+            .env("NAME", "value")
+            .timeout(5)
+            .output("result.txt")
+        )
+
+        sudo = Tools(session).sudo(source)
+        ssh = Tools(session).ssh({"host": "server.test"}).run(source)
+
+        for wrapped in (sudo, ssh):
+            self.assertEqual(wrapped.working_dir, Path("/tmp"))
+            self.assertEqual(wrapped.stdin_source, source.stdin_source)
+            self.assertEqual(wrapped.env_overrides, {"NAME": "value"})
+            self.assertEqual(wrapped.timeout_seconds, 5)
+            self.assertEqual(wrapped.output_path, source.output_path)
 
     def test_powershell_uses_utf16le_encoded_command(self):
         value = self.eval(

@@ -238,16 +238,19 @@ Available globals:
   Hostrun patches JavaScript prototypes, so these helpers are explicit globals
   instead. Wrapper values are unwrapped during JSONL result conversion.
 - `run.<program>(*args)`: preferred helper for routine command execution. It uses
-  argv-style execution with no shell parsing and returns a `CommandResult`
-  directly. Visible console output is capped to the last 300 lines by default;
-  full logs stay available on the returned `CommandResult` and through
-  `run.last()` / `run.history()`. Command names are resolved dynamically via
+  argv-style execution with no shell parsing, forwards output, records the
+  `CommandResult` in `run.history()`, and returns the integer exit code. Visible
+  console output is capped to the last 300 lines by default; full logs stay
+  available through `run.last()` / `run.history()`. Command names are resolved dynamically via
   attribute access, so `dir(run)` may be empty even when `run.niri(...)` or
   another command works.
-- `cli.<program>(*args)`: advanced command-builder helper. Use it when you need
-  capture helpers, piping, cwd/env/stdin configuration, streams, spawning,
-  redirects, or inspection. Returning a builder from JSONL/session evaluation
-  serializes it as `{program, args, cwd, env, stdin}`.
+- `cli.<program>(*args)`: advanced command-builder helper. Use chain methods
+  such as `.cwd(path)`, `.input(source)`, `.output(path)`, `.env(...)`, and
+  `.timeout(seconds)` when you need capture helpers, piping, context, streams,
+  spawning, redirects, or inspection. Returning a builder from JSONL/session
+  evaluation serializes it as `{program, args, cwd, env, stdin}`, with optional
+  `timeout`, `output`, and `stdin_from` fields when configured. `cwd` and
+  `output` are resolved paths; `stdin_from` contains the serialized input source.
 
 Command results expose:
 
@@ -258,31 +261,35 @@ Command results expose:
 - `lines()`
 - `json()`
 
-Use `run` first for routine command execution:
+Use `run` first for routine command execution, then inspect the recorded result
+when needed:
 
 ```python
-run.ls('-la')
+exit_code = run.ls('-la')
 run.python3('-c', 'print(123)')
-run.python3('-c', 'print(123)').text()
-run.python3('-c', 'print(123)').lines()
-run.python3('-c', 'import json; print(json.dumps({"ok": True}))').json()
+last = run.last()
+last.text()
+last.lines()
+last.json()
 ```
 
 You can also call `run.command(...)` or the alias `run.cmd(...)` to pass an argv-style
-list and optional `cwd` explicitly. For example:
+list. `run` helpers execute immediately and intentionally do not accept context kwargs
+such as `cwd=` or `timeout=`. The `cli` command builders likewise take positional
+command arguments only; use chain methods when you need builder context.
+For example:
 
 ```python
-run.command(['python3', '-c', 'import pathlib; print(pathlib.Path.cwd())'], cwd='/tmp')
-run.cmd(['git', 'status'], cwd='/repo')
+run.command(['python3', '-c', 'print(123)'])
+run.cmd(['git', 'status'])
 ```
 
-Immediate helpers like `run.python3(..., cwd='/tmp')` also accept a `cwd` keyword to run
-that single invocation under a different working directory.
 Do not rerun a command just to recover output hidden by the 300-line display cap.
 Use the existing `CommandResult` instead:
 
 ```python
-result = run.pytest('-q')
+run.pytest('-q')
+result = run.last()
 result.stdout
 result.stderr
 run.last().stdout
@@ -293,14 +300,18 @@ run.history()[-2].stdout
 Use `cli` when you need command-builder features:
 
 ```python
-cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()
+cli.python3('-c', 'print(open("x").read())').cwd('/tmp').run()
+cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()  # legacy alias
 cli.python3('-c', 'import os; print(os.environ["NAME"])').env('NAME', 'value').run()
 cli.python3('-c', 'import os; print(os.environ)').env_clear().env('NAME', 'value').run()
-cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run()
+cli.python3('-c', 'import sys; print(sys.stdin.read())').input('hello').run()
+cli.python3('-c', 'import sys; sys.stdout.write(sys.stdin.read().upper())').input('hello').output('out.txt').run()
+cli.python3('-c', 'print(123)').timeout(5).run()
 
 producer = cli.python3('-c', 'print("hello")')
 consumer = cli.python3('-c', 'import sys; print(sys.stdin.read().upper())')
-consumer.stdin_from(producer).run()
+consumer.input(producer).run()
+consumer.stdin_from(producer).run()  # legacy alias
 producer.pipe_to(consumer)
 
 stderr_producer = cli.python3('-c', 'import sys; print("warning", file=sys.stderr)')
@@ -314,12 +325,15 @@ no overrides are set. Commands without an explicit stdin source receive EOF;
 they never inherit Pyrun's JSONL/MCP protocol input stream. Use
 `.stdin_text(...)` or another stdin helper when input is required.
 
-`stdin_from(source, stream='stdout')` accepts another `CommandBuilder`, a
+`input(source, stream='stdout')` accepts another `CommandBuilder`, a
 `CommandStream` from `.stream()`, `.stdout_stream()`, or `.stderr_stream()`, an
 existing `CommandResult`, or plain `str`/`bytes`. Builder and stream sources run
-when the downstream command runs. Upstream non-zero exits do not raise by
-default; the downstream `CommandResult.upstream_results` tuple records upstream
-`stdout`, `stderr`, and `exit_code` evidence.
+when the downstream command runs. `stdin_from(...)` remains as a legacy alias.
+Upstream non-zero exits do not raise by default; the downstream
+`CommandResult.upstream_results` tuple records upstream
+`stdout`, `stderr`, and `exit_code` evidence. `.output(path)` writes captured
+stdout after `.run()` or `.spawn().wait()`; the path resolves against the session
+cwd and the result remains available in `stdout`.
 
 ## Hostrun Feature Parity
 
@@ -331,7 +345,7 @@ default; the downstream `CommandResult.upstream_results` tuple records upstream
 | Filesystem helpers | Partial | Read/write/exists/remove/glob/open plus JSON, JSONL, CSV, TSV, TOML-read support. YAML is not supported with stdlib only. |
 | `tools.file.replace` / `patch` | Implemented | Exact replacement and unified-diff hunk application are present; deletion patches are rejected. |
 | Temporary files/directories | Implemented | `tmp.file()` and `tmp.dir()` create cleanup-capable handles; pending approval gates create/write/cleanup side effects. |
-| Command execution / builder | Partial | `run.<program>` is the preferred immediate-execution API. `cli.<program>` returns advanced builders for cwd/env/stdin helpers, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
+| Command execution / builder | Partial | `run.<program>` is the preferred immediate-execution API. `cli.<program>` returns advanced builders with chainable `.cwd()`, `.input()`, `.output()`, `.env()`, `.timeout()`, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
 | Spawn and pipeline helpers | Partial | `.spawn()` returns process handles; pipeline helpers are capture-then-feed composition, not OS pipe FD streaming. |
 | HTTP and sessions | Partial | Stdlib `urllib` request builders, response helpers, `to_file`, base URL, and shared headers exist. No retry, cookie jar, TLS option, or streaming support yet. |
 | `rg`, `fd`, and `sqlite` wrappers | Partial | Pure-Python subsets cover common search/discovery/query flows; they are not full CLI-compatible facades. |

@@ -673,7 +673,7 @@ class Tools:
             self._session,
             "authsudo",
             (command.program, *command.args),
-            cwd=command.cwd,
+            working_dir=command.working_dir,
             stdin=command.stdin,
             env_overrides=command.env_overrides,
             inherit_env=command.inherit_env,
@@ -1405,7 +1405,7 @@ class SshTools:
         builder = CommandBuilder(self._session, program)(*args)
         if source is not None:
             builder = builder._copy(
-                cwd=source.cwd,
+                working_dir=source.working_dir,
                 stdin=source.stdin,
                 env_overrides=source.env_overrides,
                 inherit_env=source.inherit_env,
@@ -1775,7 +1775,7 @@ class CommandBuilder:
     session: Session
     program: str
     args: tuple[str, ...] = ()
-    cwd: Path | None = None
+    working_dir: Path | None = None
     stdin: str | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     stdin_source: CommandStream | CommandResult | None = None
@@ -1788,8 +1788,11 @@ class CommandBuilder:
     def timeout(self, seconds: float | None) -> CommandBuilder:
         return self._copy(timeout_seconds=seconds)
 
+    def cwd(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
+        return self._copy(working_dir=self._resolve(cwd))
+
     def in_(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
-        return self._copy(cwd=self._resolve(cwd))
+        return self.cwd(cwd)
 
     def env(
         self, name_or_values: str | dict[Any, Any], value: object | None = None
@@ -1914,7 +1917,7 @@ class CommandBuilder:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=self.cwd or self.session.cwd,
+            cwd=self.working_dir or self.session.cwd,
             env=self._subprocess_env(),
             shell=False,
         )
@@ -1960,7 +1963,7 @@ class CommandBuilder:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
             text=True,
-            cwd=self.cwd or self.session.cwd,
+            cwd=self.working_dir or self.session.cwd,
             env=self._subprocess_env(),
             shell=False,
         )
@@ -2031,7 +2034,7 @@ class CommandBuilder:
             {
                 "program": self.program,
                 "args": list(self.args),
-                "cwd": str(self.cwd or self.session.cwd),
+                "cwd": str(self.working_dir or self.session.cwd),
             },
         )
 
@@ -2054,7 +2057,7 @@ class CommandBuilder:
             "session": self.session,
             "program": self.program,
             "args": self.args,
-            "cwd": self.cwd,
+            "working_dir": self.working_dir,
             "stdin": self.stdin,
             "env_overrides": self.env_overrides,
             "stdin_source": self.stdin_source,
@@ -2641,7 +2644,7 @@ def to_json_value(value: Any) -> Any:
         serialized = {
             "program": value.program,
             "args": list(value.args),
-            "cwd": str(value.cwd) if value.cwd is not None else None,
+            "cwd": str(value.working_dir) if value.working_dir is not None else None,
             "env": to_json_value(value.env_overrides),
             "stdin": value.stdin,
         }

@@ -420,6 +420,28 @@ d.cleanup()
         self.assertEqual(result["stderr"], "")
         self.assertEqual(result["exit_code"], 0)
 
+    def test_cli_program_builder_cwd_is_chainable(self):
+        evaluation = self.eval(
+            "cli.python3('-c', 'import pathlib; print(pathlib.Path.cwd())').cwd('/tmp').run()"
+        )
+
+        self.assertEqual(evaluation["type"], "completed", evaluation)
+        result = evaluation["value"]
+        self.assertEqual(result["stdout"], "/tmp\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
+    def test_cli_command_builder_cwd_is_chainable(self):
+        evaluation = self.eval(
+            "cli.command('python3', '-c', 'import pathlib; print(pathlib.Path.cwd())').cwd('/tmp').run()"
+        )
+
+        self.assertEqual(evaluation["type"], "completed", evaluation)
+        result = evaluation["value"]
+        self.assertEqual(result["stdout"], "/tmp\n")
+        self.assertEqual(result["stderr"], "")
+        self.assertEqual(result["exit_code"], 0)
+
     def test_run_command_executes_program_argument_immediately(self):
         result = self.eval("run.command('python3', '-c', 'print(654)')")["value"]
 

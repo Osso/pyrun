@@ -234,10 +234,12 @@ Available globals:
   `run.last()` / `run.history()`. Command names are resolved dynamically via
   attribute access, so `dir(run)` may be empty even when `run.niri(...)` or
   another command works.
-- `cli.<program>(*args)`: advanced command-builder helper. Use it when you need
-  capture helpers, piping, cwd/env/stdin configuration, streams, spawning,
-  redirects, or inspection. Returning a builder from JSONL/session evaluation
-  serializes it as `{program, args, cwd, env, stdin}`.
+- `cli.<program>(*args)`: advanced command-builder helper. Use chain methods
+  such as `.cwd(path)`, `.env(...)`, `.stdin_text(...)`, and `.stdin_from(...)`
+  when you need capture helpers, piping, cwd/env/stdin configuration, streams,
+  spawning, redirects, or inspection. `.in_(path)` remains an alias for
+  `.cwd(path)`. Returning a builder from JSONL/session evaluation serializes it
+  as `{program, args, cwd, env, stdin}`.
 
 Command results expose:
 
@@ -283,7 +285,9 @@ run.history()[-2].stdout
 Use `cli` when you need command-builder features:
 
 ```python
-cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()
+cli.python3('-c', 'print(open("x").read())').cwd('/tmp').run()
+cli.command('python3', '-c', 'print(open("x").read())').cwd('/tmp').run()
+cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()  # alias
 cli.python3('-c', 'import os; print(os.environ["NAME"])').env('NAME', 'value').run()
 cli.python3('-c', 'import os; print(os.environ)').env_clear().env('NAME', 'value').run()
 cli.python3('-c', 'import sys; print(sys.stdin.read())').stdin_text('hello').run()

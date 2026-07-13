@@ -1,12 +1,14 @@
+import io
 import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from pyrun.jsonl import handle_line
-from pyrun.runtime import SessionStore
+from pyrun.runtime import SessionStore, StreamingConsole
 
 
 class JsonlProtocolTests(unittest.TestCase):
@@ -110,7 +112,247 @@ class JsonlProtocolTests(unittest.TestCase):
         self.assertEqual(result["type"], "error")
         self.assertIn("name 'pi' is not defined", result["error"])
 
-    def test_print_output_streams_before_final_result(self):
+    def test_complete_lines_stream_without_explicit_flush(self):
+        protocol = io.StringIO()
+
+        result = handle_line(
+            self.store,
+            json.dumps({"code": "print('line')", "stream_console": True}),
+            1,
+            stdout=protocol,
+        )
+
+        self.assertEqual(
+            json.loads(protocol.getvalue()),
+            {"type": "console", "stream": "stdout", "text": "line\n"},
+        )
+        self.assertEqual(result["console"], ["line"])
+
+    def test_write_streams_complete_lines_and_buffers_trailing_partial_text(self):
+        events = []
+        console = StreamingConsole(
+            "stdout",
+            lambda stream, text: events.append((stream, text)),
+        )
+
+        console.write("line 1\nline 2\npartial")
+
+        self.assertEqual(events, [("stdout", "line 1\n"), ("stdout", "line 2\n")])
+
+        console.flush()
+
+        self.assertEqual(
+            events,
+            [("stdout", "line 1\n"), ("stdout", "line 2\n"), ("stdout", "partial")],
+        )
+
+    def test_final_history_preserves_non_newline_separators_inside_live_event(self):
+        protocol = io.StringIO()
+
+        result = handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": "import sys\nsys.stdout.write('left\\rright\\n')",
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        self.assertEqual(
+            json.loads(protocol.getvalue()),
+            {"type": "console", "stream": "stdout", "text": "left\rright\n"},
+        )
+        self.assertEqual(result["console"], ["left\rright"])
+
+    def test_explicit_flush_streams_partial_text(self):
+        protocol = io.StringIO()
+
+        handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": "import sys\nsys.stdout.write('partial')\nsys.stdout.flush()",
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        self.assertEqual(
+            json.loads(protocol.getvalue()),
+            {"type": "console", "stream": "stdout", "text": "partial"},
+        )
+
+    def test_evaluation_completion_streams_partial_final_line(self):
+        protocol = io.StringIO()
+
+        handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": "import sys\nsys.stdout.write('partial final')",
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        self.assertEqual(
+            json.loads(protocol.getvalue()),
+            {"type": "console", "stream": "stdout", "text": "partial final"},
+        )
+
+    def test_stderr_and_stdout_console_events_preserve_order(self):
+        protocol = io.StringIO()
+
+        handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": (
+                        "import sys\n"
+                        "print('out 1')\n"
+                        "print('err 1', file=sys.stderr)\n"
+                        "print('out 2')"
+                    ),
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        messages = [json.loads(line) for line in protocol.getvalue().splitlines()]
+        self.assertEqual(
+            messages,
+            [
+                {"type": "console", "stream": "stdout", "text": "out 1\n"},
+                {"type": "console", "stream": "stderr", "text": "err 1\n"},
+                {"type": "console", "stream": "stdout", "text": "out 2\n"},
+            ],
+        )
+
+    def test_completion_preserves_order_of_partial_stderr_and_stdout(self):
+        protocol = io.StringIO()
+
+        result = handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": (
+                        "import sys\n"
+                        "sys.stderr.write('err partial')\n"
+                        "sys.stdout.write('out partial')"
+                    ),
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        messages = [json.loads(line) for line in protocol.getvalue().splitlines()]
+        self.assertEqual(
+            messages,
+            [
+                {"type": "console", "stream": "stderr", "text": "err partial"},
+                {"type": "console", "stream": "stdout", "text": "out partial"},
+            ],
+        )
+        self.assertEqual(result["console"], ["err partial", "out partial"])
+
+    def test_exception_preserves_partial_stderr_and_stdout_order(self):
+        protocol = io.StringIO()
+
+        result = handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": (
+                        "import sys\n"
+                        "sys.stderr.write('err partial')\n"
+                        "sys.stdout.write('out partial')\n"
+                        "raise RuntimeError('boom')"
+                    ),
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        messages = [json.loads(line) for line in protocol.getvalue().splitlines()]
+        self.assertEqual(
+            messages,
+            [
+                {"type": "console", "stream": "stderr", "text": "err partial"},
+                {"type": "console", "stream": "stdout", "text": "out partial"},
+            ],
+        )
+        self.assertEqual(result["type"], "error")
+        self.assertEqual(result["console"], ["err partial", "out partial"])
+
+    def test_interleaved_partial_flush_exception_keeps_protocol_outside_console(self):
+        protocol = io.StringIO()
+
+        result = handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": (
+                        "import sys\n"
+                        "sys.stdout.write('out partial')\n"
+                        "sys.stderr.write('err complete\\n')\n"
+                        "sys.stdout.flush()\n"
+                        "raise RuntimeError('boom')"
+                    ),
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        messages = [json.loads(line) for line in protocol.getvalue().splitlines()]
+        self.assertEqual(
+            messages,
+            [
+                {"type": "console", "stream": "stderr", "text": "err complete\n"},
+                {"type": "console", "stream": "stdout", "text": "out partial"},
+            ],
+        )
+        self.assertEqual(result["type"], "error")
+        self.assertEqual(result["console"], ["err complete", "out partial"])
+        self.assertNotIn('"type": "console"', "\n".join(result["console"]))
+
+    def test_exception_streams_partial_text_before_error_result(self):
+        protocol = io.StringIO()
+
+        result = handle_line(
+            self.store,
+            json.dumps(
+                {
+                    "code": "import sys\nsys.stderr.write('before error')\nraise RuntimeError('boom')",
+                    "stream_console": True,
+                }
+            ),
+            1,
+            stdout=protocol,
+        )
+
+        self.assertEqual(
+            json.loads(protocol.getvalue()),
+            {"type": "console", "stream": "stderr", "text": "before error"},
+        )
+        self.assertEqual(result["type"], "error")
+        self.assertEqual(result["console"], ["before error"])
+
+    def test_print_sleep_print_streams_first_line_before_sleep_completes(self):
         process = subprocess.Popen(
             [sys.executable, "-m", "pyrun.jsonl"],
             stdin=subprocess.PIPE,
@@ -124,24 +366,26 @@ class JsonlProtocolTests(unittest.TestCase):
             process.stdin.write(
                 json.dumps(
                     {
-                        "code": "import time\nprint('tick 1', flush=True)\ntime.sleep(0.2)\nprint('tick 2', flush=True)\n'done'",
+                        "code": "import time\nprint('start')\ntime.sleep(1)\nprint('end')",
                         "stream_console": True,
                     }
                 )
                 + "\n"
             )
             process.stdin.flush()
+            started_at = time.monotonic()
 
             first = json.loads(process.stdout.readline())
-            self.assertEqual(first, {"type": "console", "stream": "stdout", "text": "tick 1\n"})
-
+            first_elapsed = time.monotonic() - started_at
             second = json.loads(process.stdout.readline())
-            self.assertEqual(second, {"type": "console", "stream": "stdout", "text": "tick 2\n"})
-
+            second_elapsed = time.monotonic() - started_at
             result = json.loads(process.stdout.readline())
+
+            self.assertEqual(first, {"type": "console", "stream": "stdout", "text": "start\n"})
+            self.assertGreater(second_elapsed - first_elapsed, 0.5)
+            self.assertEqual(second, {"type": "console", "stream": "stdout", "text": "end\n"})
             self.assertEqual(result["type"], "completed")
-            self.assertEqual(result["console"], ["tick 1", "tick 2"])
-            self.assertEqual(result["value"], "done")
+            self.assertEqual(result["console"], ["start", "end"])
         finally:
             process.stdin.close()
             process.stdout.close()

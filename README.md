@@ -49,8 +49,25 @@ into pending approval.
 or an error shape for invalid requests or evaluation failures:
 
 ```json
-{"type":"error","executed":"1 / 0","error":"division by zero"}
+{"type":"error","executed":"print('before failure')\n1 / 0","console":["before failure"],"error":"division by zero"}
 ```
+
+Set `stream_console` to `true` to receive ordered console events before the final
+result. Standard output and standard error are line-buffered independently:
+complete lines emit immediately, `flush()` emits pending partial text, and
+evaluation completion or failure emits remaining partial text before the final
+result. The final result retains the latest 300 console entries using the same
+event boundaries and order as live streaming.
+
+```json
+{"session_id":"optional-session","code":"print('start')","stream_console":true}
+{"type":"console","stream":"stdout","text":"start\n"}
+{"type":"completed","executed":"print('start')","console":["start"],"value":null}
+```
+
+Protocol output is written through the JSONL adapter's original stdout stream;
+evaluated Python stdout and stderr are captured only as console events and final
+console history.
 
 Invalid JSON, non-object requests, missing/non-string `code`, and non-string
 `session_id` are reported as error objects. Runtime helper objects such as

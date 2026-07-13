@@ -1897,9 +1897,6 @@ class CommandBuilder:
     def combined_text(self, timeout: float | None = None) -> str:
         return self._run(merge_stderr=True, timeout=self._effective_timeout(timeout)).stdout
 
-    def to_file(self, path: str | os.PathLike[str]) -> CommandResult:
-        return self.output(path).run()
-
     def stderr_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
         result = self.run()
         write_text_file(self._resolve(path), result.stderr)
@@ -1913,7 +1910,7 @@ class CommandBuilder:
         return result
 
     def tee(self, path: str | os.PathLike[str]) -> CommandResult:
-        return self.to_file(path)
+        return self.output(path).run()
 
     def stderr_tee(self, path: str | os.PathLike[str]) -> CommandResult:
         return self.stderr_to_file(path)

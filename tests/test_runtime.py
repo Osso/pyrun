@@ -767,6 +767,11 @@ d.cleanup()
         self.assertEqual(builder.stderr_json(), {"err": 2})
         self.assertEqual(builder.combined_text(), '{"out": 1}\n{"err": 2}\n')
 
+    def test_command_builder_has_no_terminal_to_file_helper(self):
+        builder = CommandBuilder(Session(), sys.executable)
+
+        self.assertFalse(hasattr(builder, "to_file"))
+
     def test_command_builder_output_redirects_and_tee(self):
         with tempfile.TemporaryDirectory() as tmp:
             session = Session(cwd=Path(tmp))
@@ -774,7 +779,7 @@ d.cleanup()
                 "-c",
                 "import sys; print('out', flush=True); print('err', file=sys.stderr)",
             )
-            stdout_result = builder.to_file("stdout.txt")
+            stdout_result = builder.output("stdout.txt").run()
             stderr_result = builder.stderr_to_file("stderr.txt")
             combined_result = builder.combined_to_file("combined.txt")
             tee_result = builder.tee("tee.txt")

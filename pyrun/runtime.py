@@ -2321,29 +2321,59 @@ class ImmediateCommand:
 
 PiRequestHandler = Callable[[str, Any], Any]
 ConsoleWriter = Callable[[str, str], None]
+CONSOLE_LINE_LIMIT = 300
 
 
 class StreamingConsole(io.TextIOBase):
-    def __init__(self, stream: str, buffer: io.StringIO, on_write: ConsoleWriter | None) -> None:
-        self._buffer = buffer
-        self._pending = ""
-        self._stream = stream
+    def __init__(
+        self,
+        stream: str,
+        on_write: ConsoleWriter | None,
+        next_order: Callable[[], int] | None = None,
+    ) -> None:
+        self._next_order = next_order or itertools.count().__next__
         self._on_write = on_write
+        self._pending = ""
+        self._pending_order: int | None = None
+        self._stream = stream
+
+    @property
+    def pending_order(self) -> int | None:
+        return self._pending_order
 
     def write(self, text: str) -> int:
-        self._buffer.write(text)
+        if not self._pending and text:
+            self._pending_order = self._next_order()
         self._pending += text
-        if "\n" in self._pending:
-            self.flush()
+        parts = self._pending.split("\n")
+        self._pending = parts.pop()
+        if self._on_write is not None:
+            for complete_line in parts:
+                self._on_write(self._stream, f"{complete_line}\n")
+        if parts:
+            self._pending_order = self._next_order() if self._pending else None
         return len(text)
 
     def flush(self) -> None:
         if self._pending and self._on_write is not None:
             self._on_write(self._stream, self._pending)
         self._pending = ""
+        self._pending_order = None
 
     def writable(self) -> bool:
         return True
+
+
+def flush_streaming_consoles(*consoles: StreamingConsole) -> None:
+    ordered = sorted(
+        consoles,
+        key=lambda console: (
+            console.pending_order is None,
+            console.pending_order if console.pending_order is not None else 0,
+        ),
+    )
+    for console in ordered:
+        console.flush()
 
 
 class PiFooter:
@@ -2468,9 +2498,17 @@ class SessionStore:
         console_writer: ConsoleWriter | None = None,
     ) -> dict[str, Any]:
         session = self._session(session_id)
-        console = io.StringIO()
-        stdout = StreamingConsole("stdout", console, console_writer)
-        stderr = StreamingConsole("stderr", console, console_writer)
+        console_history: list[str] = []
+        console_order = itertools.count()
+
+        def record_console(stream: str, text: str) -> None:
+            console_history.append(text[:-1] if text.endswith("\n") else text)
+            del console_history[:-CONSOLE_LINE_LIMIT]
+            if console_writer is not None:
+                console_writer(stream, text)
+
+        stdout = StreamingConsole("stdout", record_console, console_order.__next__)
+        stderr = StreamingConsole("stderr", record_console, console_order.__next__)
         pi_global = self._build_pi_global(pi, pi_bridge, pi_request_handler)
         try:
             with (
@@ -2479,27 +2517,27 @@ class SessionStore:
                 session_local_os_cwd(session),
             ):
                 value = evaluate_python(code, session.build_globals(pi_global))
-                stdout.flush()
-                stderr.flush()
+                flush_streaming_consoles(stdout, stderr)
         except ApprovalRequired as exc:
-            stdout.flush()
-            stderr.flush()
+            flush_streaming_consoles(stdout, stderr)
             return {
                 "type": "needs_approval",
                 "executed": code,
-                "console": console_lines(console),
+                "console": console_history,
                 "approval": exc.approval,
             }
         except Exception as exc:  # noqa: BLE001 - error is returned to JSONL caller.
+            flush_streaming_consoles(stdout, stderr)
             return {
                 "type": "error",
                 "executed": code,
+                "console": console_history,
                 "error": str(exc),
             }
         return {
             "type": "completed",
             "executed": code,
-            "console": console_lines(console),
+            "console": console_history,
             "value": to_json_value(value),
         }
 
@@ -2637,11 +2675,6 @@ def evaluate_exec_with_trailing_expr(
     expression = ast.Expression(module.body[-1].value)
     ast.fix_missing_locations(expression)
     return eval(compile(expression, "<pyrun>", "eval"), globals_map)  # noqa: S307
-
-
-def console_lines(console: io.StringIO, line_limit: int = 300) -> list[str]:
-    text = console.getvalue()
-    return text.splitlines()[-line_limit:]
 
 
 def to_json_value(value: Any) -> Any:

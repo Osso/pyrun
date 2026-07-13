@@ -343,6 +343,7 @@ Use `cli` when you need command-builder features. Output forwards by default:
 
 ```python
 cli.python3('-c', 'print(open("x").read())').cwd('/tmp').run()
+cli.command('python3', '-c', 'print(open("x").read())').cwd('/tmp').run()
 cli.python3('-c', 'print(open("x").read())').in_('/tmp').run()  # legacy alias
 cli.python3('-c', 'import os; print(os.environ["NAME"])').env('NAME', 'value').run()
 cli.python3('-c', 'import os; print(os.environ)').env_clear().env('NAME', 'value').run()

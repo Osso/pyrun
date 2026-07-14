@@ -1635,6 +1635,16 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.exit_code, 0)
 
+    def test_command_builder_uses_global_default_timeout(self):
+        value = self.eval("cli.command('python3')")["value"]
+
+        self.assertEqual(value["timeout"], 300)
+
+    def test_command_builder_timeout_none_disables_global_default(self):
+        value = self.eval("cli.command('python3').timeout(None)")["value"]
+
+        self.assertNotIn("timeout", value)
+
     def test_command_builder_timeout_is_serialized(self):
         value = self.eval("cli.command('python3').timeout(5)")["value"]
 
@@ -1764,6 +1774,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
                 "cwd": "/tmp",
                 "env": {"X_TEST": "1"},
                 "stdin": "input",
+                "timeout": 300,
             },
         )
 
@@ -1793,6 +1804,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
                 "cwd": None,
                 "env": {},
                 "stdin": None,
+                "timeout": 300,
             },
         )
         self.assertEqual(

@@ -239,17 +239,19 @@ Available globals:
   instead. Wrapper values are unwrapped during JSONL result conversion.
 - `run.<program>(*args)`: preferred helper for routine command execution. It uses
   argv-style execution with no shell parsing, forwards output, records the
-  `CommandResult` in `run.history()`, and returns the integer exit code. Visible
-  console output is capped to the last 300 lines by default; full logs stay
+  `CommandResult` in `run.history()`, and returns the integer exit code. Commands
+  time out after 300 seconds by default. Visible console output is capped to the
+  last 300 lines by default; full logs stay
   available through `run.last()` / `run.history()`. Command names are resolved dynamically via
   attribute access, so `dir(run)` may be empty even when `run.niri(...)` or
   another command works.
 - `cli.<program>(*args)`: advanced command-builder helper. Use chain methods
   such as `.cwd(path)`, `.input(source)`, `.output(path)`, `.env(...)`, and
   `.timeout(seconds)` when you need capture helpers, piping, context, streams,
-  spawning, redirects, or inspection. Returning a builder from JSONL/session
-  evaluation serializes it as `{program, args, cwd, env, stdin}`, with optional
-  `timeout`, `output`, and `stdin_from` fields when configured. `cwd` and
+  spawning, redirects, or inspection. Commands time out after 300 seconds by
+  default; use `.timeout(None)` to disable the timeout. Returning a builder from
+  JSONL/session evaluation serializes it as `{program, args, cwd, env, stdin}`,
+  with `timeout` plus optional `output` and `stdin_from` fields. `cwd` and
   `output` are resolved paths; `stdin_from` contains the serialized input source.
 
 Command results expose:
@@ -307,6 +309,7 @@ cli.python3('-c', 'import os; print(os.environ)').env_clear().env('NAME', 'value
 cli.python3('-c', 'import sys; print(sys.stdin.read())').input('hello').run()
 cli.python3('-c', 'import sys; sys.stdout.write(sys.stdin.read().upper())').input('hello').output('out.txt').run()
 cli.python3('-c', 'print(123)').timeout(5).run()
+cli.python3('-c', 'print(123)').timeout(None).run()  # no timeout
 
 producer = cli.python3('-c', 'print("hello")')
 consumer = cli.python3('-c', 'import sys; print(sys.stdin.read().upper())')

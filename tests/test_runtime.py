@@ -879,6 +879,16 @@ d.cleanup()
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.exit_code, 0)
 
+    def test_command_builder_uses_global_default_timeout(self):
+        value = self.eval("cli.command('python3')")["value"]
+
+        self.assertEqual(value["timeout"], 300)
+
+    def test_command_builder_timeout_none_disables_global_default(self):
+        value = self.eval("cli.command('python3').timeout(None)")["value"]
+
+        self.assertNotIn("timeout", value)
+
     def test_command_builder_timeout_is_serialized(self):
         value = self.eval("cli.command('python3').timeout(5)")["value"]
 
@@ -1003,6 +1013,7 @@ d.cleanup()
                 "cwd": "/tmp",
                 "env": {"X_TEST": "1"},
                 "stdin": "input",
+                "timeout": 300,
             },
         )
 
@@ -1032,6 +1043,7 @@ d.cleanup()
                 "cwd": None,
                 "env": {},
                 "stdin": None,
+                "timeout": 300,
             },
         )
         self.assertEqual(

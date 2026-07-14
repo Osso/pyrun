@@ -27,6 +27,9 @@ from collections.abc import Callable
 from typing import Any
 
 
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 300
+
+
 class TextNamespace:
     def lines(
         self, value: Any, start: int | None = None, end: int | None = None
@@ -1786,7 +1789,7 @@ class CommandBuilder:
     env_overrides: dict[str, str] = field(default_factory=dict)
     stdin_source: CommandStream | CommandResult | None = None
     inherit_env: bool = True
-    timeout_seconds: float | None = None
+    timeout_seconds: float | None = DEFAULT_COMMAND_TIMEOUT_SECONDS
     output_path: Path | None = None
 
     def __call__(self, *args: object) -> CommandBuilder:

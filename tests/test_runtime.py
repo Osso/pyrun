@@ -425,15 +425,40 @@ d.cleanup()
 
         self.assertEqual(result, [True, True, False, False, {"ok": True}, True, True])
 
-    def test_cli_builder_and_run_execute_without_shell(self):
-        code = "cli.python3('-c', 'print(123)').run()"
-        result = self.eval(code)["value"]
-        text = self.eval("cli.python3('-c', 'print(456)').text()")["value"]
+    def test_cli_builder_run_forwards_output_and_returns_exit_code(self):
+        result = self.eval(
+            "cli.python3('-c', 'import sys; print(123); print(456, file=sys.stderr)').run()"
+        )
 
-        self.assertEqual(result["stdout"], "123\n")
-        self.assertEqual(result["stderr"], "")
-        self.assertEqual(result["exit_code"], 0)
-        self.assertEqual(text, "456\n")
+        self.assertEqual(result["console"], ["123", "456"])
+        self.assertEqual(result["value"], 0)
+
+    def test_cli_builder_capture_suppresses_output_and_returns_result(self):
+        result = self.eval(
+            "cli.python3('-c', 'import sys; print(123); print(456, file=sys.stderr)').capture().run()"
+        )
+
+        self.assertEqual(result["console"], [])
+        self.assertEqual(
+            result["value"],
+            {"stdout": "123\n", "stderr": "456\n", "exit_code": 0, "upstream_results": []},
+        )
+
+    def test_cli_builder_runs_are_available_in_command_history(self):
+        self.eval("cli.python3('-c', 'print(123)').run()")
+        self.eval("cli.python3('-c', 'print(456)').capture().run()")
+
+        history = self.eval(
+            "[(result.stdout, result.stderr, result.exit_code) for result in run.history()]"
+        )["value"]
+
+        self.assertEqual(history, [["123\n", "", 0], ["456\n", "", 0]])
+
+    def test_cli_capture_helpers_execute_without_forwarding(self):
+        text_result = self.eval("cli.python3('-c', 'print(456)').text()")
+
+        self.assertEqual(text_result["console"], [])
+        self.assertEqual(text_result["value"], "456\n")
 
     def test_run_namespace_executes_commands_without_explicit_run(self):
         result = self.eval("run.python3('-c', 'print(789)')")["value"]
@@ -441,7 +466,7 @@ d.cleanup()
         self.assertEqual(result, 0)
 
     def test_cli_command_builds_command_from_program_argument(self):
-        result = self.eval("cli.command('python3', '-c', 'print(321)').run()")[
+        result = self.eval("cli.command('python3', '-c', 'print(321)').capture().run()")[
             "value"
         ]
 
@@ -526,7 +551,7 @@ d.cleanup()
         data = self.eval(
             "cli.python3('-c', 'import json; print(json.dumps({\"a\": 1}))').json()"
         )["value"]
-        returncode = self.eval("cli.python3('-c', 'print(1)').run().returncode")["value"]
+        returncode = self.eval("cli.python3('-c', 'print(1)').capture().run().returncode")["value"]
 
         self.assertEqual(lines, ["1", "2"])
         self.assertEqual(data, {"a": 1})
@@ -540,6 +565,7 @@ d.cleanup()
                     "import os; print(os.getcwd())",
                 )
                 .in_(tmp)
+                .capture()
                 .run()
             )
 
@@ -555,7 +581,7 @@ d.cleanup()
             result = CommandBuilder(Session(), sys.executable)(
                 "-c",
                 "import sys; sys.stdout.write(sys.stdin.read())",
-            ).run(timeout=0.1)
+            ).capture().run(timeout=0.1)
         finally:
             os.dup2(original_stdin, 0)
             os.close(original_stdin)
@@ -592,6 +618,7 @@ d.cleanup()
                     "import os; print(os.getcwd())",
                 )
                 .cwd(tmp)
+                .capture()
                 .run()
             )
 
@@ -609,6 +636,7 @@ d.cleanup()
                 )
                 .input("hello from stdin")
                 .output("stdout.txt")
+                .capture()
                 .run()
             )
 
@@ -635,6 +663,7 @@ d.cleanup()
                 "import sys; sys.stdout.write(sys.stdin.read().upper())",
             )
             .stdin_text("hello from stdin")
+            .capture()
             .run()
         )
 
@@ -649,6 +678,7 @@ d.cleanup()
                 "import os; print(os.environ['PYRUN_TEST_ENV'])",
             )
             .env("PYRUN_TEST_ENV", "visible")
+            .capture()
             .run()
         )
         inherited = (
@@ -657,6 +687,7 @@ d.cleanup()
                 "import os; print(os.environ['PATH'] != '')",
             )
             .env({"PYRUN_TEST_ENV": "dict-value"})
+            .capture()
             .run()
         )
 
@@ -676,6 +707,7 @@ d.cleanup()
                     f"import os; print({key!r} in os.environ)",
                 )
                 .env_clear()
+                .capture()
                 .run()
             )
         finally:
@@ -700,6 +732,7 @@ d.cleanup()
                 )
                 .env_inherit(False)
                 .env(key, "override-value")
+                .capture()
                 .run()
             )
         finally:
@@ -781,7 +814,7 @@ d.cleanup()
                 "-c",
                 "import sys; print('out', flush=True); print('err', file=sys.stderr)",
             )
-            stdout_result = builder.output("stdout.txt").run()
+            stdout_result = builder.output("stdout.txt").capture().run()
             stderr_result = builder.stderr_to_file("stderr.txt")
             combined_result = builder.combined_to_file("combined.txt")
             tee_result = builder.tee("tee.txt")
@@ -1254,7 +1287,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
         result = CommandBuilder(Session(), sys.executable)(
             "-c",
             "print('done')",
-        ).run(timeout=5)
+        ).capture().run(timeout=5)
 
         self.assertEqual(result.stdout, "done\n")
         self.assertEqual(result.stderr, "")
@@ -1264,7 +1297,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
         result = CommandBuilder(Session(), sys.executable)(
             "-c",
             "print('done')",
-        ).timeout(5).run()
+        ).timeout(5).capture().run()
 
         self.assertEqual(result.stdout, "done\n")
         self.assertEqual(result.stderr, "")
@@ -1281,7 +1314,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
         result = CommandBuilder(Session(), sys.executable)(
             "-c",
             "print('done')",
-        ).timeout(0.1).run(timeout=5)
+        ).timeout(0.1).capture().run(timeout=5)
 
         self.assertEqual(result.stdout, "done\n")
         self.assertEqual(result.stderr, "")
@@ -1297,6 +1330,11 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
         value = self.eval("cli.command('python3').output('/tmp/result.txt')")["value"]
 
         self.assertEqual(value["output"], "/tmp/result.txt")
+
+    def test_command_builder_capture_is_serialized(self):
+        value = self.eval("cli.command('python3').capture()")["value"]
+
+        self.assertTrue(value["capture"])
 
     def test_command_builder_spawn_wait_uses_builder_timeout(self):
         with self.assertRaises(subprocess.TimeoutExpired):
@@ -1317,7 +1355,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
             "-c",
             "import sys; print(sys.argv[1])",
             "hello; echo hacked",
-        ).run()
+        ).capture().run()
 
         self.assertEqual(result.stdout, "hello; echo hacked\n")
         self.assertEqual(result.stderr, "")
@@ -1333,7 +1371,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
             "import sys; sys.stdout.write(sys.stdin.read().upper())",
         )
 
-        result = consumer.stdin_from(producer).run()
+        result = consumer.stdin_from(producer).capture().run()
 
         self.assertEqual(result.stdout, "HELLO STREAM\n")
         self.assertEqual(result.exit_code, 0)
@@ -1351,7 +1389,7 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
             "import sys; sys.stdout.write(sys.stdin.read().title())",
         )
 
-        result = consumer.stdin_from(producer.stderr_stream()).run()
+        result = consumer.stdin_from(producer.stderr_stream()).capture().run()
 
         self.assertEqual(result.stdout, "From Stderr\n")
         self.assertEqual(result.upstream_results[0].stderr, "from stderr\n")
@@ -1361,13 +1399,13 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
         source = CommandBuilder(session, sys.executable)(
             "-c",
             "import sys; print('out'); print('err', file=sys.stderr)",
-        ).run()
+        ).capture().run()
         consumer = CommandBuilder(session, sys.executable)(
             "-c",
             "import sys; sys.stdout.write(sys.stdin.read() + '!')",
         )
 
-        result = consumer.stdin_from(source, stream="stderr").run()
+        result = consumer.stdin_from(source, stream="stderr").capture().run()
 
         self.assertEqual(result.stdout, "err\n!")
         self.assertEqual(result.upstream_results[0].stderr, "err\n")

@@ -1794,6 +1794,7 @@ class CommandBuilder:
     timeout_seconds: float | None = None
     output_path: Path | None = None
     tmux_name: str | None = None
+    capture_result: bool = False
 
     def __call__(self, *args: object) -> CommandBuilder:
         return self._copy(args=self.args + tuple(str(arg) for arg in args))
@@ -1842,6 +1843,9 @@ class CommandBuilder:
     def output(self, path: str | os.PathLike[str]) -> CommandBuilder:
         return self._copy(output_path=self._resolve(path))
 
+    def capture(self) -> CommandBuilder:
+        return self._copy(capture_result=True)
+
     def stdin_text(self, text: str) -> CommandBuilder:
         return self._copy(stdin=text, stdin_source=None)
 
@@ -1878,25 +1882,31 @@ class CommandBuilder:
     def stdin_tsv(self, rows: list[Any]) -> CommandBuilder:
         return self.stdin_text(serialize_delimited_rows(rows, "\t"))
 
-    def run(self, timeout: float | None = None) -> CommandResult:
-        return self._run(merge_stderr=False, timeout=self._effective_timeout(timeout))
+    def run(self, timeout: float | None = None) -> int | CommandResult:
+        effective_timeout = self._effective_timeout(timeout)
+        if self.capture_result:
+            result = self._run(merge_stderr=False, timeout=effective_timeout)
+        else:
+            result = self._run_forwarded_result(timeout=effective_timeout)
+        self._record_result(result)
+        return result if self.capture_result else result.exit_code
 
     def pipe_to(
         self, next_builder: CommandBuilder, stream: str = "stdout"
     ) -> CommandResult:
-        return next_builder.stdin_from(self.stream(stream)).run()
+        return next_builder.stdin_from(self.stream(stream))._capture_run()
 
     def text(self) -> str:
-        return self.run().text()
+        return self._capture_run().text()
 
     def lines(self) -> list[str]:
-        return self.run().lines()
+        return self._capture_run().lines()
 
     def json(self) -> Any:
-        return self.run().json()
+        return self._capture_run().json()
 
     def stderr_text(self) -> str:
-        return self.run().stderr
+        return self._capture_run().stderr
 
     def stderr_lines(self) -> list[str]:
         return self.stderr_text().splitlines()
@@ -1905,10 +1915,12 @@ class CommandBuilder:
         return json.loads(self.stderr_text())
 
     def combined_text(self, timeout: float | None = None) -> str:
-        return self._run(merge_stderr=True, timeout=self._effective_timeout(timeout)).stdout
+        result = self._run(merge_stderr=True, timeout=self._effective_timeout(timeout))
+        self._record_result(result)
+        return result.stdout
 
     def stderr_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
-        result = self.run()
+        result = self._capture_run()
         write_text_file(self._resolve(path), result.stderr)
         return result
 
@@ -1916,11 +1928,12 @@ class CommandBuilder:
         self, path: str | os.PathLike[str], timeout: float | None = None
     ) -> CommandResult:
         result = self._run(merge_stderr=True, timeout=self._effective_timeout(timeout))
+        self._record_result(result)
         write_text_file(self._resolve(path), result.stdout)
         return result
 
     def tee(self, path: str | os.PathLike[str]) -> CommandResult:
-        return self.output(path).run()
+        return self.output(path)._capture_run()
 
     def stderr_tee(self, path: str | os.PathLike[str]) -> CommandResult:
         return self.stderr_to_file(path)
@@ -1973,16 +1986,24 @@ class CommandBuilder:
             write_text_file(self.output_path, result.stdout)
         return result
 
-    def run_forwarded(self, timeout: float | None = None) -> CommandResult:
+    def _capture_run(self, timeout: float | None = None) -> CommandResult:
+        result = self.capture().run(timeout)
+        assert isinstance(result, CommandResult)
+        return result
+
+    def _run_forwarded_result(self, timeout: float | None = None) -> CommandResult:
         self._require_approval()
         stdin, upstream_results = self._resolve_stdin()
-        completed = self._run_forwarded(stdin, timeout=self._effective_timeout(timeout))
-        return CommandResult(
+        completed = self._run_forwarded(stdin, timeout=timeout)
+        result = CommandResult(
             stdout=completed.stdout,
             stderr=completed.stderr,
             exit_code=completed.returncode,
             upstream_results=upstream_results,
         )
+        if self.output_path is not None:
+            write_text_file(self.output_path, result.stdout)
+        return result
 
     def _run_streaming(
         self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
@@ -2070,7 +2091,7 @@ class CommandBuilder:
 
     def _resolve_stdin(self) -> tuple[str | None, tuple[CommandResult, ...]]:
         if isinstance(self.stdin_source, CommandStream):
-            upstream = self.stdin_source.builder.run()
+            upstream = self.stdin_source.builder._capture_run()
             return select_command_output(upstream, self.stdin_source.stream), (
                 upstream,
             )
@@ -2095,9 +2116,13 @@ class CommandBuilder:
             "timeout_seconds": self.timeout_seconds,
             "output_path": self.output_path,
             "tmux_name": self.tmux_name,
+            "capture_result": self.capture_result,
         }
         values.update(changes)
         return CommandBuilder(**values)
+
+    def _record_result(self, result: CommandResult) -> None:
+        self.session.command_history.append(result)
 
     def _effective_timeout(self, timeout: float | None) -> float | None:
         return self.timeout_seconds if timeout is None else timeout
@@ -2887,13 +2912,13 @@ class CommandNamespace:
     def __getattr__(self, program: str) -> Any:
         command = CommandBuilder(self._session, program.replace("_", "-"))
         if self._immediate:
-            return ImmediateCommand(self._session, command)
+            return ImmediateCommand(command)
         return command
 
     def command(self, program: object, *args: object) -> CommandBuilder | int:
         builder = self._build_command(program, args)
         if self._immediate:
-            return ImmediateCommand(self._session, builder)()
+            return ImmediateCommand(builder)()
         return builder
 
     def cmd(self, program: object, *args: object) -> CommandBuilder | int:
@@ -2925,15 +2950,14 @@ class CommandNamespace:
 
 
 class ImmediateCommand:
-    def __init__(self, session: Session, command: CommandBuilder) -> None:
-        self._session = session
+    def __init__(self, command: CommandBuilder) -> None:
         self._command = command
 
     def __call__(self, *args: object) -> int:
         command = self._command(*args)
-        result = command.run_forwarded()
-        self._session.command_history.append(result)
-        return result.exit_code
+        result = command.run()
+        assert isinstance(result, int)
+        return result
 
 
 PiRequestHandler = Callable[[str, Any], Any]
@@ -3311,6 +3335,8 @@ def to_json_value(value: Any) -> Any:
             serialized["output"] = str(value.output_path)
         if value.tmux_name is not None:
             serialized["tmux"] = value.tmux_name
+        if value.capture_result:
+            serialized["capture"] = True
         if value.stdin_source is not None:
             serialized["stdin_from"] = to_json_value(value.stdin_source)
         return serialized

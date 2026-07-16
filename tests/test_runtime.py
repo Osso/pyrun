@@ -1,10 +1,12 @@
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -805,6 +807,407 @@ d.cleanup()
         self.assertEqual(tee_result.stderr, "err\n")
         self.assertEqual(stderr_tee_result.stdout, "out\n")
         self.assertEqual(combined_tee_result.stdout, "out\nerr\n")
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_reads_output_before_command_finishes(self):
+        session_name = f"pyrun-test-{os.getpid()}-read"
+        try:
+            handle = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c",
+                    "import time; print('activation-code', flush=True); time.sleep(30)",
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+
+            output = handle.read(timeout=5)
+
+            self.assertEqual(output, "activation-code\n")
+            self.assertIsNone(handle.poll())
+            self.assertTrue(handle.kill())
+            self.assertNotEqual(handle.wait(timeout=5).exit_code, 0)
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_reuses_session_and_queues_commands(self):
+        session_name = f"pyrun-test-{os.getpid()}-queue"
+        try:
+            first = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c",
+                    "import time; print('first-start', flush=True); time.sleep(0.3); print('first-done')",
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+            second = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c", "print('second-done')"
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+
+            second_result = second.wait(timeout=5)
+            first_result = first.wait(timeout=5)
+            session_exists = subprocess.run(
+                ["tmux", "has-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(first_result.stdout, "first-start\nfirst-done\n")
+            self.assertEqual(first_result.exit_code, 0)
+            self.assertEqual(second_result.stdout, "second-done\n")
+            self.assertEqual(second_result.exit_code, 0)
+            self.assertEqual(session_exists.returncode, 0)
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_read_returns_only_new_output(self):
+        session_name = f"pyrun-test-{os.getpid()}-incremental"
+        try:
+            handle = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c",
+                    "import time; print('first', flush=True); time.sleep(1); print('second', flush=True); time.sleep(0.3)",
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+
+            first = handle.read(timeout=5)
+            second = handle.read(timeout=5)
+
+            self.assertEqual(first, "first\n")
+            self.assertEqual(second, "second\n")
+            self.assertEqual(handle.wait(timeout=5).stdout, "first\nsecond\n")
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_kill_releases_queued_command(self):
+        session_name = f"pyrun-test-{os.getpid()}-hard-kill"
+        try:
+            blocker = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c",
+                    "import signal, time; signal.signal(signal.SIGINT, signal.SIG_IGN); print('blocking', flush=True); time.sleep(30)",
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+            queued = (
+                CommandBuilder(Session(), sys.executable)("-c", "print('released')")
+                .tmux(session_name)
+                .spawn()
+            )
+            self.assertEqual(blocker.read(timeout=5), "blocking\n")
+
+            self.assertTrue(blocker.kill())
+
+            self.assertNotEqual(blocker.wait(timeout=5).exit_code, 0)
+            self.assertEqual(queued.wait(timeout=5).stdout, "released\n")
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_recreates_killed_session(self):
+        session_name = f"pyrun-test-{os.getpid()}-recreate"
+        try:
+            first = CommandBuilder(Session(), "printf")("first\\n").tmux(session_name).spawn()
+            self.assertEqual(first.wait(timeout=5).stdout, "first\n")
+            subprocess.run(["tmux", "kill-session", "-t", session_name], check=True)
+
+            second = CommandBuilder(Session(), "printf")("second\\n").tmux(session_name).spawn()
+
+            self.assertEqual(second.wait(timeout=5).stdout, "second\n")
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_preserves_long_output_beyond_history(self):
+        session_name = f"pyrun-test-{os.getpid()}-history"
+        try:
+            handle = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c", "for n in range(3000): print(f'line-{n}')"
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+
+            result = handle.wait(timeout=10)
+
+            self.assertTrue(result.stdout.startswith("line-0\n"))
+            self.assertTrue(result.stdout.endswith("line-2999\n"))
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_serializes_across_pyrun_processes(self):
+        session_name = f"pyrun-test-{os.getpid()}-cross-process"
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp, "events.txt")
+            script = """
+import sys
+from pathlib import Path
+from pyrun.runtime import CommandBuilder, Session
+name, label, events = sys.argv[1:]
+code = "import sys, time; from pathlib import Path; path=Path(sys.argv[1]); label=sys.argv[2]; path.open('a').write(label + '-start\\\\n'); time.sleep(0.4); path.open('a').write(label + '-end\\\\n')"
+CommandBuilder(Session(), sys.executable)("-c", code, events, label).tmux(name).spawn().wait(timeout=10)
+"""
+            try:
+                first = subprocess.Popen(
+                    [sys.executable, "-c", script, session_name, "a", str(events)],
+                    cwd=ROOT,
+                )
+                second = subprocess.Popen(
+                    [sys.executable, "-c", script, session_name, "b", str(events)],
+                    cwd=ROOT,
+                )
+                self.assertEqual(first.wait(timeout=15), 0)
+                self.assertEqual(second.wait(timeout=15), 0)
+
+                lines = events.read_text().splitlines()
+
+                self.assertIn(
+                    lines,
+                    [
+                        ["a-start", "a-end", "b-start", "b-end"],
+                        ["b-start", "b-end", "a-start", "a-end"],
+                    ],
+                )
+            finally:
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", session_name],
+                    capture_output=True,
+                    check=False,
+                )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_waits_for_existing_busy_shell(self):
+        session_name = f"pyrun-test-{os.getpid()}-busy-shell"
+        try:
+            subprocess.run(["tmux", "new-session", "-d", "-s", session_name], check=True)
+            subprocess.run(
+                [
+                    "tmux",
+                    "send-keys",
+                    "-t",
+                    session_name,
+                    f"{shlex.quote(sys.executable)} -c 'import time; time.sleep(1)'",
+                    "Enter",
+                ],
+                check=True,
+            )
+
+            handle = CommandBuilder(Session(), "printf")("after-busy\\n").tmux(session_name).spawn()
+
+            self.assertEqual(handle.wait(timeout=5).stdout, "after-busy\n")
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_waits_for_command_after_owner_process_dies(self):
+        session_name = f"pyrun-test-{os.getpid()}-owner-death"
+        with tempfile.TemporaryDirectory() as tmp:
+            events = Path(tmp, "events.txt")
+            owner_script = """
+import sys, time
+from pyrun.runtime import CommandBuilder, Session
+name, events = sys.argv[1:]
+code = "import sys, time; from pathlib import Path; path=Path(sys.argv[1]); path.open('a').write('owner-start\\\\n'); time.sleep(1); path.open('a').write('owner-end\\\\n')"
+CommandBuilder(Session(), sys.executable)("-c", code, events).tmux(name).spawn()
+time.sleep(30)
+"""
+            next_script = """
+import sys
+from pyrun.runtime import CommandBuilder, Session
+name, events = sys.argv[1:]
+code = "import sys; from pathlib import Path; path=Path(sys.argv[1]); path.open('a').write('next-start\\\\n'); path.open('a').write('next-end\\\\n')"
+result = CommandBuilder(Session(), sys.executable)("-c", code, events).tmux(name).spawn().wait(timeout=10)
+raise SystemExit(0 if result.exit_code == 0 else 1)
+"""
+            try:
+                owner = subprocess.Popen(
+                    [sys.executable, "-c", owner_script, session_name, str(events)],
+                    cwd=ROOT,
+                )
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if events.exists() and "owner-start" in events.read_text():
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("owner command did not start")
+                owner.terminate()
+                owner.wait(timeout=5)
+
+                queued = subprocess.run(
+                    [sys.executable, "-c", next_script, session_name, str(events)],
+                    cwd=ROOT,
+                    timeout=15,
+                    check=False,
+                )
+
+                self.assertEqual(queued.returncode, 0)
+                self.assertEqual(
+                    events.read_text().splitlines(),
+                    ["owner-start", "owner-end", "next-start", "next-end"],
+                )
+            finally:
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", session_name],
+                    capture_output=True,
+                    check=False,
+                )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_preserves_split_utf8_output(self):
+        session_name = f"pyrun-test-{os.getpid()}-utf8"
+        try:
+            handle = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c",
+                    "import os, time; os.write(1, b'\\xe2'); time.sleep(0.2); os.write(1, b'\\x82\\xac\\n'); time.sleep(0.2)",
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+
+            self.assertEqual(handle.read(timeout=5), "€\n")
+            self.assertEqual(handle.wait(timeout=5).stdout, "€\n")
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_output_failure_does_not_block_queue(self):
+        session_name = f"pyrun-test-{os.getpid()}-output-failure"
+        with tempfile.TemporaryDirectory() as tmp:
+            try:
+                failed = (
+                    CommandBuilder(Session(), "printf")("failed-output\\n")
+                    .output(tmp)
+                    .tmux(session_name)
+                    .spawn()
+                )
+                queued = CommandBuilder(Session(), "printf")("queued\\n").tmux(session_name).spawn()
+
+                failed_result = failed.wait(timeout=5)
+                queued_result = queued.wait(timeout=5)
+
+                self.assertIn("failed to write command output", failed_result.stderr)
+                self.assertEqual(queued_result.stdout, "queued\n")
+            finally:
+                subprocess.run(
+                    ["tmux", "kill-session", "-t", session_name],
+                    capture_output=True,
+                    check=False,
+                )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_recovers_when_active_session_is_destroyed(self):
+        session_name = f"pyrun-test-{os.getpid()}-active-destroy"
+        try:
+            active = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c", "import time; print('started', flush=True); time.sleep(30)"
+                )
+                .tmux(session_name)
+                .spawn()
+            )
+            self.assertEqual(active.read(timeout=5), "started\n")
+            subprocess.run(["tmux", "kill-session", "-t", session_name], check=True)
+
+            self.assertNotEqual(active.wait(timeout=5).exit_code, 0)
+            recovered = CommandBuilder(Session(), "printf")("recovered\\n").tmux(session_name).spawn()
+            self.assertEqual(recovered.wait(timeout=5).stdout, "recovered\n")
+        finally:
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    def test_command_builder_tmux_rejects_option_shaped_environment_names(self):
+        with self.assertRaises(ValueError):
+            (
+                CommandBuilder(Session(), "printf")("safe\\n")
+                .env("--split-string", "printf INJECTED")
+                .tmux("pyrun-invalid-environment")
+                .spawn()
+            )
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_command_builder_tmux_honors_cleared_environment(self):
+        session_name = f"pyrun-test-{os.getpid()}-environment"
+        key = "PYRUN_TMUX_PARENT_SENTINEL"
+        old_value = os.environ.get(key)
+        os.environ[key] = "parent"
+        try:
+            result = (
+                CommandBuilder(Session(), sys.executable)(
+                    "-c", f"import os; print(os.environ.get({key!r}))"
+                )
+                .env_clear()
+                .env("ONLY_THIS", "present")
+                .tmux(session_name)
+                .spawn()
+                .wait(timeout=5)
+            )
+
+            self.assertEqual(result.stdout, "None\n")
+        finally:
+            if old_value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old_value
+            subprocess.run(
+                ["tmux", "kill-session", "-t", session_name],
+                capture_output=True,
+                check=False,
+            )
+
+    def test_command_builder_tmux_name_is_serialized(self):
+        value = self.eval("cli.command('python3').tmux('groundcover-auth')")["value"]
+
+        self.assertEqual(value["tmux"], "groundcover-auth")
 
     def test_command_builder_output_applies_to_spawn_wait(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -352,6 +352,23 @@ Upstream non-zero exits do not raise by default; the downstream
 stdout after `.run()` or `.spawn().wait()`; the path resolves against the session
 cwd and the result remains available in `stdout`.
 
+### tmux-backed command sessions
+
+Use `cli.command(...).tmux(name).spawn()` to run a command in a named tmux
+session:
+
+```python
+handle = cli.command("python3", "-c", "print('ready')").tmux("worker").spawn()
+```
+
+Pyrun reuses an existing named session, keeps it alive after commands finish,
+and queues commands submitted to the same session sequentially. `handle.read()`
+can return incrementally captured output before completion; `wait()` returns the
+final `CommandResult`, while `poll()`, `kill()`, `text()`, `lines()`, and `json()`
+provide process/result helpers. This requires the `tmux` executable. Output is
+captured from the terminal pane as combined stdout/stderr, and composed stdin
+via `.input()`/`.stdin_from()` is unsupported for tmux commands.
+
 ## Hostrun Feature Parity
 
 | Hostrun feature area | Pyrun status | Notes and caveats |
@@ -363,7 +380,7 @@ cwd and the result remains available in `stdout`.
 | `tools.file.replace` / `patch` | Implemented | Exact replacement and unified-diff hunk application are present; deletion patches are rejected. |
 | Temporary files/directories | Implemented | `tmp.file()` and `tmp.dir()` create cleanup-capable handles; pending approval gates create/write/cleanup side effects. |
 | Command execution / builder | Partial | `run.<program>` is the preferred immediate-execution API. `cli.<program>` returns advanced builders with chainable `.cwd()`, `.input()`, `.output()`, `.env()`, `.timeout()`, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
-| Spawn and pipeline helpers | Partial | `.spawn()` returns process handles; pipeline helpers are capture-then-feed composition, not OS pipe FD streaming. |
+| Spawn and pipeline helpers | Partial | `.spawn()` returns process handles; tmux-backed handles reuse persistent named sessions and queue sequentially, but capture terminal-combined output and reject composed stdin. Pipeline helpers are capture-then-feed composition, not OS pipe FD streaming. |
 | HTTP and sessions | Partial | Stdlib `urllib` request builders, response helpers, `to_file`, base URL, and shared headers exist. No retry, cookie jar, TLS option, or streaming support yet. |
 | `rg`, `fd`, and `sqlite` wrappers | Partial | Pure-Python subsets cover common search/discovery/query flows; they are not full CLI-compatible facades. |
 | `kubectl` wrapper | Implemented | Builds `kubectl get` argv with namespace, selector, all-namespaces, name, and output options. |

@@ -4,23 +4,28 @@ import ast
 import base64
 import builtins
 import contextlib
+import codecs
 import csv
 import fnmatch
+import fcntl
 import glob as glob_module
 import io
 import itertools
 import json
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
@@ -1788,12 +1793,17 @@ class CommandBuilder:
     inherit_env: bool = True
     timeout_seconds: float | None = None
     output_path: Path | None = None
+    tmux_name: str | None = None
 
     def __call__(self, *args: object) -> CommandBuilder:
         return self._copy(args=self.args + tuple(str(arg) for arg in args))
 
     def timeout(self, seconds: float | None) -> CommandBuilder:
         return self._copy(timeout_seconds=seconds)
+
+    def tmux(self, name: str) -> CommandBuilder:
+        validate_tmux_session_name(name)
+        return self._copy(tmux_name=name)
 
     def cwd(self, cwd: str | os.PathLike[str]) -> CommandBuilder:
         return self._copy(working_dir=self._resolve(cwd))
@@ -1920,9 +1930,13 @@ class CommandBuilder:
     ) -> CommandResult:
         return self.combined_to_file(path, timeout=timeout)
 
-    def spawn(self) -> ProcessHandle:
+    def spawn(self) -> ProcessHandle | TmuxProcessHandle:
         self._require_approval()
         stdin, upstream_results = self._resolve_stdin()
+        if self.tmux_name is not None:
+            if stdin is not None:
+                raise ValueError("tmux commands do not support composed stdin")
+            return spawn_tmux_command(self, upstream_results)
         process = subprocess.Popen(
             [self.program, *self.args],
             stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
@@ -2080,6 +2094,7 @@ class CommandBuilder:
             "inherit_env": self.inherit_env,
             "timeout_seconds": self.timeout_seconds,
             "output_path": self.output_path,
+            "tmux_name": self.tmux_name,
         }
         values.update(changes)
         return CommandBuilder(**values)
@@ -2092,6 +2107,611 @@ class CommandBuilder:
         if not candidate.is_absolute():
             candidate = self.session.cwd / candidate
         return candidate.resolve()
+
+
+def validate_tmux_session_name(name: str) -> None:
+    if not name or re.fullmatch(r"[A-Za-z0-9_.-]+", name) is None:
+        raise ValueError(
+            "tmux session name must contain only letters, numbers, '.', '_', or '-'"
+        )
+
+
+@dataclass
+class TmuxProcessHandle:
+    id: int
+    pid: int
+    program: str
+    args: tuple[str, ...]
+    session_name: str
+    token: str
+    marker: str
+    capture_path: Path
+    coordinator: TmuxCommandCoordinator
+    upstream_results: tuple[CommandResult, ...] = ()
+    timeout_seconds: float | None = None
+    output_path: Path | None = None
+    shell_command: str = ""
+    _done: threading.Event = field(default_factory=threading.Event)
+    _result: CommandResult | None = None
+    _active: bool = False
+    _capture_offset: int = 0
+    _capture_decoder: Any = field(
+        default_factory=lambda: codecs.getincrementaldecoder("utf-8")(errors="replace")
+    )
+    _capture_pending: str = ""
+    _capture_started: bool = False
+    _capture_finished: bool = False
+    _sanitize_pending: str = ""
+    _clean_chunks: list[str] = field(default_factory=list)
+    _read_chunk_index: int = 0
+    _state_lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def read(self, timeout: float | None = None) -> str:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        done_deadline: float | None = None
+        while True:
+            self.coordinator.capture_output(self)
+            with self._state_lock:
+                if len(self._clean_chunks) > self._read_chunk_index:
+                    chunk = "".join(self._clean_chunks[self._read_chunk_index :])
+                    self._read_chunk_index = len(self._clean_chunks)
+                    return chunk
+                if self._done.is_set() and self._result is not None:
+                    if done_deadline is None:
+                        done_deadline = time.monotonic() + 0.25
+                    elif time.monotonic() >= done_deadline:
+                        return ""
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired([self.program, *self.args], timeout)
+            time.sleep(0.05)
+
+    def poll(self) -> int | None:
+        if not self._done.is_set() or self._result is None:
+            return None
+        return self._result.exit_code
+
+    def wait(self, timeout: float | None = None) -> CommandResult:
+        effective_timeout = self.timeout_seconds if timeout is None else timeout
+        if not self._done.wait(effective_timeout):
+            self.kill()
+            raise subprocess.TimeoutExpired([self.program, *self.args], effective_timeout)
+        assert self._result is not None
+        return self._result
+
+    def kill(self) -> bool:
+        return self.coordinator.kill(self)
+
+    def text(self, timeout: float | None = None) -> str:
+        return self.wait(timeout).text()
+
+    def lines(self, timeout: float | None = None) -> list[str]:
+        return self.wait(timeout).lines()
+
+    def json(self, timeout: float | None = None) -> Any:
+        return self.wait(timeout).json()
+
+    def _complete(self, exit_code: int) -> None:
+        if self._done.is_set():
+            return
+        stdout = ""
+        errors: list[str] = []
+        try:
+            stdout = self.coordinator.capture_output(self, final=True)
+        except Exception as exc:
+            errors.append(f"failed to read command output: {exc}")
+        if self.output_path is not None:
+            try:
+                write_text_file(self.output_path, stdout)
+            except Exception as exc:
+                errors.append(f"failed to write command output: {exc}")
+        with self._state_lock:
+            self._result = CommandResult(
+                stdout=stdout,
+                stderr="\n".join(errors) + ("\n" if errors else ""),
+                exit_code=exit_code,
+                upstream_results=self.upstream_results,
+            )
+            self._done.set()
+        self.capture_path.unlink(missing_ok=True)
+        subprocess.run(
+            [
+                "tmux",
+                "set-option",
+                "-u",
+                "-t",
+                self.session_name,
+                f"@pyrun_status_{self.marker}",
+            ],
+            capture_output=True,
+            check=False,
+        )
+
+
+class TmuxCommandCoordinator:
+    def __init__(self, session_name: str) -> None:
+        self.session_name = session_name
+        self._condition = threading.Condition()
+        self._queue: list[TmuxProcessHandle] = []
+        self._active: TmuxProcessHandle | None = None
+        self._active_waiter: subprocess.Popen[bytes] | None = None
+        self._pane_id: str | None = None
+        self._ensure_session()
+        threading.Thread(target=self._dispatch, daemon=True).start()
+
+    def enqueue(self, handle: TmuxProcessHandle) -> None:
+        with self._condition:
+            self._queue.append(handle)
+            self._condition.notify()
+
+    def capture_output(
+        self, handle: TmuxProcessHandle, final: bool = False
+    ) -> str:
+        with handle._state_lock:
+            try:
+                with handle.capture_path.open("rb") as capture:
+                    capture.seek(handle._capture_offset)
+                    chunk = capture.read()
+                    handle._capture_offset = capture.tell()
+            except FileNotFoundError:
+                chunk = b""
+            decoded = handle._capture_decoder.decode(chunk, final=final)
+            consume_tmux_capture(handle, decoded, final=final)
+            return "".join(handle._clean_chunks)
+
+    def kill(self, handle: TmuxProcessHandle) -> bool:
+        with self._condition:
+            if handle._done.is_set():
+                return False
+            if handle is self._active:
+                pane_id = self._pane_id
+                if pane_id is not None:
+                    subprocess.run(
+                        ["tmux", "send-keys", "-t", pane_id, "C-c"],
+                        capture_output=True,
+                        check=False,
+                    )
+                threading.Thread(
+                    target=self._force_kill_after_grace,
+                    args=(handle, pane_id),
+                    daemon=True,
+                ).start()
+                return True
+            if handle in self._queue:
+                self._queue.remove(handle)
+                handle._complete(-9)
+                return True
+            return False
+
+    def _force_kill_after_grace(
+        self, handle: TmuxProcessHandle, pane_id: str | None
+    ) -> None:
+        time.sleep(0.25)
+        with self._condition:
+            if handle._done.is_set() or handle is not self._active:
+                return
+            if pane_id is not None:
+                subprocess.run(
+                    ["tmux", "respawn-pane", "-k", "-t", pane_id],
+                    capture_output=True,
+                    check=False,
+                )
+            if self._active_waiter is not None:
+                self._active_waiter.kill()
+            handle._complete(-9)
+
+    def _ensure_session(self) -> None:
+        exists = subprocess.run(
+            ["tmux", "has-session", "-t", self.session_name],
+            capture_output=True,
+            check=False,
+        )
+        if exists.returncode == 0:
+            return
+        created = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", self.session_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if created.returncode != 0:
+            raced = subprocess.run(
+                ["tmux", "has-session", "-t", self.session_name],
+                capture_output=True,
+                check=False,
+            )
+            if raced.returncode != 0:
+                raise RuntimeError(
+                    created.stderr.strip() or "failed to create tmux session"
+                )
+
+    def _resolve_pane(self) -> str:
+        stored = subprocess.run(
+            [
+                "tmux",
+                "show-option",
+                "-qv",
+                "-t",
+                self.session_name,
+                "@pyrun_pane",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if stored:
+            valid = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", stored, "#{pane_id}"],
+                capture_output=True,
+                check=False,
+            )
+            if valid.returncode == 0:
+                return stored
+        panes = subprocess.run(
+            ["tmux", "list-panes", "-t", self.session_name, "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        pane_id = panes[0]
+        subprocess.run(
+            [
+                "tmux",
+                "set-option",
+                "-t",
+                self.session_name,
+                "@pyrun_pane",
+                pane_id,
+            ],
+            capture_output=True,
+            check=True,
+        )
+        return pane_id
+
+    def _dispatch(self) -> None:
+        while True:
+            with self._condition:
+                while not self._queue:
+                    self._condition.wait()
+                handle = self._queue.pop(0)
+                self._active = handle
+                handle._active = True
+            try:
+                exit_code = self._run(handle)
+                handle._complete(exit_code)
+            except Exception:
+                handle._complete(127)
+            finally:
+                with self._condition:
+                    handle._active = False
+                    self._active = None
+                    self._active_waiter = None
+                    self._pane_id = None
+
+    def _run(self, handle: TmuxProcessHandle) -> int:
+        lock = self._acquire_lock(handle)
+        if lock is None:
+            return -9
+        pane_id: str | None = None
+        try:
+            if handle._done.is_set():
+                return -9
+            self._ensure_session()
+            pane_id = self._resolve_pane()
+            self._pane_id = pane_id
+            if not self._wait_for_shell_idle(handle, pane_id):
+                return -9 if handle._done.is_set() else 127
+            handle.capture_path.parent.mkdir(parents=True, exist_ok=True)
+            handle.capture_path.write_text("")
+            pipe_command = f"cat >> {shlex.quote(str(handle.capture_path))}"
+            subprocess.run(
+                ["tmux", "pipe-pane", "-t", pane_id, pipe_command], check=True
+            )
+            waiter = subprocess.Popen(
+                ["tmux", "wait-for", handle.token],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._active_waiter = waiter
+            command = build_tmux_shell_command(handle)
+            sent = subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "-l", command],
+                capture_output=True,
+                check=False,
+            )
+            if sent.returncode == 0:
+                sent = subprocess.run(
+                    ["tmux", "send-keys", "-t", pane_id, "Enter"],
+                    capture_output=True,
+                    check=False,
+                )
+            if sent.returncode != 0:
+                waiter.kill()
+                waiter.wait()
+                return 127
+            while waiter.poll() is None:
+                if handle._done.is_set():
+                    waiter.kill()
+                    waiter.wait()
+                    return handle._result.exit_code if handle._result is not None else -9
+                session_exists = subprocess.run(
+                    ["tmux", "has-session", "-t", self.session_name],
+                    capture_output=True,
+                    check=False,
+                )
+                if session_exists.returncode != 0:
+                    waiter.kill()
+                    waiter.wait()
+                    return 127
+                time.sleep(0.05)
+            self._wait_for_capture_done(handle)
+            if handle._done.is_set() and handle._result is not None:
+                return handle._result.exit_code
+            status = subprocess.run(
+                [
+                    "tmux",
+                    "show-option",
+                    "-qv",
+                    "-t",
+                    self.session_name,
+                    f"@pyrun_status_{handle.marker}",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            try:
+                return int(status.stdout.strip())
+            except ValueError:
+                return 127
+        finally:
+            if pane_id is not None:
+                subprocess.run(
+                    ["tmux", "pipe-pane", "-t", pane_id],
+                    capture_output=True,
+                    check=False,
+                )
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
+
+    def _acquire_lock(self, handle: TmuxProcessHandle) -> io.TextIOWrapper | None:
+        lock_path = Path(tempfile.gettempdir()) / "pyrun-tmux" / f"{self.session_name}.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = lock_path.open("a+")
+        while not handle._done.is_set():
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return lock
+            except BlockingIOError:
+                time.sleep(0.05)
+        lock.close()
+        return None
+
+    def _wait_for_shell_idle(
+        self, handle: TmuxProcessHandle, pane_id: str
+    ) -> bool:
+        while not handle._done.is_set():
+            current = subprocess.run(
+                ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_current_command}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if current.returncode != 0:
+                return False
+            active = subprocess.run(
+                ["tmux", "show-option", "-qv", "-t", self.session_name, "@pyrun_active"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            shell = subprocess.run(
+                ["tmux", "show-option", "-qv", "-t", self.session_name, "@pyrun_shell"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            current_name = current.stdout.strip()
+            if not shell:
+                shell = self._pane_shell_name(pane_id)
+                if not shell:
+                    return False
+                subprocess.run(
+                    ["tmux", "set-option", "-t", self.session_name, "@pyrun_shell", shell],
+                    capture_output=True,
+                    check=False,
+                )
+            if active and current_name == shell:
+                subprocess.run(
+                    ["tmux", "set-option", "-u", "-t", self.session_name, "@pyrun_active"],
+                    capture_output=True,
+                    check=False,
+                )
+                active = ""
+            if not active and current_name == shell:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def _pane_shell_name(self, pane_id: str) -> str:
+        pane_pid = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane_id, "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.strip()
+        if not pane_pid.isdigit():
+            return ""
+        try:
+            return Path(f"/proc/{pane_pid}/comm").read_text().strip()
+        except OSError:
+            return ""
+
+    def _wait_for_capture_done(self, handle: TmuxProcessHandle) -> None:
+        start = f"\x1ePYRUN_START_{handle.marker}\x1e"
+        done = f"\x1ePYRUN_DONE_{handle.marker}:"
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            try:
+                captured = handle.capture_path.read_text(errors="replace")
+            except FileNotFoundError:
+                captured = ""
+            start_index = captured.rfind(start)
+            if start_index >= 0 and captured.find(done, start_index) >= 0:
+                return
+            time.sleep(0.01)
+
+
+_tmux_coordinators: dict[str, TmuxCommandCoordinator] = {}
+_tmux_coordinators_lock = threading.Lock()
+
+
+def spawn_tmux_command(
+    builder: CommandBuilder, upstream_results: tuple[CommandResult, ...]
+) -> TmuxProcessHandle:
+    assert builder.tmux_name is not None
+    with _tmux_coordinators_lock:
+        coordinator = _tmux_coordinators.get(builder.tmux_name)
+        if coordinator is None:
+            coordinator = TmuxCommandCoordinator(builder.tmux_name)
+            _tmux_coordinators[builder.tmux_name] = coordinator
+    process_id = next(_process_ids)
+    pane = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", builder.tmux_name, "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        pid = int(pane.stdout.strip())
+    except ValueError:
+        pid = 0
+    marker = uuid.uuid4().hex
+    handle = TmuxProcessHandle(
+        id=process_id,
+        pid=pid,
+        program=builder.program,
+        args=builder.args,
+        session_name=builder.tmux_name,
+        token=f"pyrun-{marker}",
+        marker=marker,
+        capture_path=Path(tempfile.gettempdir()) / "pyrun-tmux" / f"{marker}.log",
+        coordinator=coordinator,
+        upstream_results=upstream_results,
+        timeout_seconds=builder.timeout_seconds,
+        output_path=builder.output_path,
+    )
+    handle.shell_command = build_command_argv(builder)
+    coordinator.enqueue(handle)
+    return handle
+
+
+def build_command_argv(builder: CommandBuilder) -> str:
+    command = shlex.join([builder.program, *builder.args])
+    for key in builder.env_overrides:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) is None:
+            raise ValueError(f"invalid environment variable name: {key!r}")
+    environment = [
+        shlex.quote(f"{key}={value}") for key, value in builder.env_overrides.items()
+    ]
+    if not builder.inherit_env:
+        command = " ".join(["env", "-i", "--", *environment, command])
+    elif environment:
+        command = " ".join(["env", "--", *environment, command])
+    working_dir = builder.working_dir or builder.session.cwd
+    return f"cd {shlex.quote(str(working_dir))} && {command}"
+
+
+def build_tmux_shell_command(handle: TmuxProcessHandle) -> str:
+    start = f"PYRUN_START_{handle.marker}"
+    done = f"PYRUN_DONE_{handle.marker}"
+    status_option = f"@pyrun_status_{handle.marker}"
+    active_option = "@pyrun_active"
+    command = handle.shell_command
+    return (
+        f"tmux set-option -t {shlex.quote(handle.session_name)} {active_option} {shlex.quote(handle.marker)}; "
+        f"printf '\\036%s\\036' {shlex.quote(start)}; "
+        f"({command}); __pyrun_status=$?; "
+        f"printf '\\036%s:%s\\036' {shlex.quote(done)} \"$__pyrun_status\"; "
+        f"tmux set-option -t {shlex.quote(handle.session_name)} {status_option} \"$__pyrun_status\"; "
+        f"tmux set-option -u -t {shlex.quote(handle.session_name)} {active_option}; "
+        f"tmux wait-for -S {shlex.quote(handle.token)}"
+    )
+
+
+def consume_tmux_capture(
+    handle: TmuxProcessHandle, decoded: str, final: bool = False
+) -> None:
+    if handle._capture_finished:
+        return
+    handle._capture_pending += decoded
+    start = f"\x1ePYRUN_START_{handle.marker}\x1e"
+    done = f"\x1ePYRUN_DONE_{handle.marker}:"
+    if not handle._capture_started:
+        start_index = handle._capture_pending.find(start)
+        if start_index < 0:
+            handle._capture_pending = handle._capture_pending[-len(start) :]
+            return
+        handle._capture_pending = handle._capture_pending[start_index + len(start) :]
+        handle._capture_started = True
+    done_index = handle._capture_pending.find(done)
+    if done_index >= 0:
+        content = handle._capture_pending[:done_index]
+        handle._capture_pending = ""
+        handle._capture_finished = True
+        append_sanitized_tmux_output(handle, content, final=True)
+        return
+    if final:
+        content = handle._capture_pending
+        handle._capture_pending = ""
+        append_sanitized_tmux_output(handle, content, final=True)
+        return
+    marker_index = handle._capture_pending.rfind("\x1e")
+    if marker_index >= 0:
+        content = handle._capture_pending[:marker_index]
+        handle._capture_pending = handle._capture_pending[marker_index:]
+    else:
+        content = handle._capture_pending
+        handle._capture_pending = ""
+    if content:
+        append_sanitized_tmux_output(handle, content, final=False)
+
+
+def append_sanitized_tmux_output(
+    handle: TmuxProcessHandle, content: str, final: bool
+) -> None:
+    text = handle._sanitize_pending + content
+    clean: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "\x1b":
+            if text[index] != "\r":
+                clean.append(text[index])
+            index += 1
+            continue
+        if index + 1 >= len(text):
+            break
+        kind = text[index + 1]
+        if kind == "[":
+            end = index + 2
+            while end < len(text) and not ("@" <= text[end] <= "~"):
+                end += 1
+            if end >= len(text):
+                break
+            index = end + 1
+            continue
+        if kind in ("P", "]"):
+            bell = text.find("\x07", index + 2) if kind == "]" else -1
+            terminator = text.find("\x1b\\", index + 2)
+            candidates = [position for position in (bell, terminator) if position >= 0]
+            if not candidates:
+                break
+            end = min(candidates)
+            index = end + (1 if text[end] == "\x07" else 2)
+            continue
+        index += 2
+    handle._sanitize_pending = "" if final else text[index:]
+    if clean:
+        handle._clean_chunks.append("".join(clean))
 
 
 @dataclass
@@ -2689,6 +3309,8 @@ def to_json_value(value: Any) -> Any:
             serialized["timeout"] = value.timeout_seconds
         if value.output_path is not None:
             serialized["output"] = str(value.output_path)
+        if value.tmux_name is not None:
+            serialized["tmux"] = value.tmux_name
         if value.stdin_source is not None:
             serialized["stdin_from"] = to_json_value(value.stdin_source)
         return serialized
@@ -2712,6 +3334,14 @@ def to_json_value(value: Any) -> Any:
             "text": value.text(),
             "lines": value.lines(),
             "json": value.json() if value.json_mode else None,
+        }
+    if isinstance(value, TmuxProcessHandle):
+        return {
+            "id": value.id,
+            "pid": value.pid,
+            "program": value.program,
+            "args": list(value.args),
+            "tmux": value.session_name,
         }
     if isinstance(value, ProcessHandle):
         return {

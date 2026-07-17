@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import shlex
@@ -951,6 +953,22 @@ d.cleanup()
 
         self.assertEqual(raised.exception.errno, 28)
         self.assertLess(time.monotonic() - started_at, 1)
+
+    @unittest.skipUnless(Path("/dev/full").exists(), "/dev/full is required")
+    def test_command_builder_forwarded_output_precedes_output_write_error(self):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        builder = CommandBuilder(Session(), sys.executable)(
+            "-c",
+            "import sys; print('out', flush=True); print('err', file=sys.stderr, flush=True)",
+        ).output("/dev/full")
+
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(OSError):
+                builder.run()
+
+        self.assertEqual(stdout.getvalue(), "out\n")
+        self.assertEqual(stderr.getvalue(), "err\n")
 
     def test_command_builder_timeout_is_not_masked_by_output_close_failure(self):
         class CloseFailingOutput:

@@ -1977,7 +1977,11 @@ class CommandBuilder:
     def _run(self, merge_stderr: bool, timeout: float | None = None) -> CommandResult:
         self._require_approval()
         stdin, upstream_results = self._resolve_stdin()
-        completed = self._run_streaming(stdin, merge_stderr, timeout=timeout)
+        completed, output_error = self._run_streaming(
+            stdin, merge_stderr, timeout=timeout
+        )
+        if output_error is not None:
+            raise output_error
         result = CommandResult(
             stdout=completed.stdout,
             stderr="" if merge_stderr else completed.stderr,
@@ -2005,7 +2009,7 @@ class CommandBuilder:
 
     def _run_streaming(
         self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    ) -> tuple[subprocess.CompletedProcess[str], OSError | None]:
         output_file: io.TextIOWrapper | None = None
         output_errors: list[OSError] = []
         if self.output_path is not None:
@@ -2081,9 +2085,7 @@ class CommandBuilder:
                 ) from exc
             for thread in threads:
                 thread.join()
-            if output_errors:
-                raise output_errors[0]
-            return subprocess.CompletedProcess(
+            completed = subprocess.CompletedProcess(
                 args=command,
                 returncode=returncode,
                 stdout="".join(stdout_chunks),
@@ -2094,18 +2096,23 @@ class CommandBuilder:
             if output_file is not None:
                 try:
                     output_file.close()
-                except OSError:
-                    if pending_error is None and not output_errors:
-                        raise
+                except OSError as error:
+                    if pending_error is None:
+                        output_errors.append(error)
+        return completed, output_errors[0] if output_errors else None
 
     def _run_forwarded(
         self, stdin: str | None, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
-        completed = self._run_streaming(stdin, merge_stderr=False, timeout=timeout)
+        completed, output_error = self._run_streaming(
+            stdin, merge_stderr=False, timeout=timeout
+        )
         sys.stdout.write(completed.stdout)
         sys.stdout.flush()
         sys.stderr.write(completed.stderr)
         sys.stderr.flush()
+        if output_error is not None:
+            raise output_error
         return completed
 
     def _require_approval(self) -> None:

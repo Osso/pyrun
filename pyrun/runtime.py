@@ -2008,65 +2008,80 @@ class CommandBuilder:
     def _run_streaming(
         self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
-        process = subprocess.Popen(
-            [self.program, *self.args],
-            stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
-            text=True,
-            cwd=self.working_dir or self.session.cwd,
-            env=self._subprocess_env(),
-            shell=False,
-        )
-        if stdin is not None and process.stdin is not None:
-            process.stdin.write(stdin)
-            process.stdin.close()
+        with contextlib.ExitStack() as resources:
+            output_file: io.TextIOWrapper | None = None
+            if self.output_path is not None:
+                self.output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_file = resources.enter_context(self.output_path.open("w"))
 
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
-
-        def pump(stream: io.TextIOBase | None, sink: list[str]) -> None:
-            if stream is None:
-                return
-            for chunk in iter(lambda: stream.read(1), ""):
-                sink.append(chunk)
-            stream.close()
-
-        threads: list[threading.Thread] = []
-        if process.stdout is not None:
-            thread = threading.Thread(
-                target=pump, args=(process.stdout, stdout_chunks), daemon=True
+            process = subprocess.Popen(
+                [self.program, *self.args],
+                stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+                text=True,
+                cwd=self.working_dir or self.session.cwd,
+                env=self._subprocess_env(),
+                shell=False,
             )
-            thread.start()
-            threads.append(thread)
-        if not merge_stderr and process.stderr is not None:
-            thread = threading.Thread(
-                target=pump, args=(process.stderr, stderr_chunks), daemon=True
-            )
-            thread.start()
-            threads.append(thread)
-        command = [self.program, *self.args]
-        try:
-            returncode = process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired as exc:
-            process.kill()
-            returncode = process.wait()
+            if stdin is not None and process.stdin is not None:
+                process.stdin.write(stdin)
+                process.stdin.close()
+
+            stdout_chunks: list[str] = []
+            stderr_chunks: list[str] = []
+
+            def pump(
+                stream: io.TextIOBase | None,
+                sink: list[str],
+                output: io.TextIOWrapper | None = None,
+            ) -> None:
+                if stream is None:
+                    return
+                for chunk in iter(lambda: stream.read(1), ""):
+                    sink.append(chunk)
+                    if output is not None:
+                        output.write(chunk)
+                        output.flush()
+                stream.close()
+
+            threads: list[threading.Thread] = []
+            if process.stdout is not None:
+                thread = threading.Thread(
+                    target=pump,
+                    args=(process.stdout, stdout_chunks, output_file),
+                    daemon=True,
+                )
+                thread.start()
+                threads.append(thread)
+            if not merge_stderr and process.stderr is not None:
+                thread = threading.Thread(
+                    target=pump, args=(process.stderr, stderr_chunks), daemon=True
+                )
+                thread.start()
+                threads.append(thread)
+            command = [self.program, *self.args]
+            try:
+                returncode = process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                process.kill()
+                returncode = process.wait()
+                for thread in threads:
+                    thread.join()
+                raise subprocess.TimeoutExpired(
+                    command,
+                    exc.timeout,
+                    output="".join(stdout_chunks),
+                    stderr="" if merge_stderr else "".join(stderr_chunks),
+                ) from exc
             for thread in threads:
                 thread.join()
-            raise subprocess.TimeoutExpired(
-                command,
-                exc.timeout,
-                output="".join(stdout_chunks),
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=returncode,
+                stdout="".join(stdout_chunks),
                 stderr="" if merge_stderr else "".join(stderr_chunks),
-            ) from exc
-        for thread in threads:
-            thread.join()
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=returncode,
-            stdout="".join(stdout_chunks),
-            stderr="" if merge_stderr else "".join(stderr_chunks),
-        )
+            )
 
     def _run_forwarded(
         self, stdin: str | None, timeout: float | None = None

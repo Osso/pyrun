@@ -841,6 +841,57 @@ d.cleanup()
         self.assertEqual(stderr_tee_result.stdout, "out\n")
         self.assertEqual(combined_tee_result.stdout, "out\nerr\n")
 
+    def test_command_builder_output_grows_before_command_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            output_path = Path(tmp, "stdout.txt")
+            release_path = Path(tmp, "release")
+            results = []
+            errors = []
+
+            def run_command():
+                try:
+                    result = (
+                        CommandBuilder(session, sys.executable)(
+                            "-c",
+                            "import pathlib, time\n"
+                            "print('early', flush=True)\n"
+                            "release = pathlib.Path('release')\n"
+                            "while not release.exists():\n"
+                            "    time.sleep(0.01)\n"
+                            "print('late', flush=True)\n",
+                        )
+                        .output("stdout.txt")
+                        .capture()
+                        .run()
+                    )
+                    results.append(result)
+                except BaseException as error:
+                    errors.append(error)
+
+            thread = threading.Thread(target=run_command, daemon=True)
+            thread.start()
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if output_path.exists() and output_path.read_text() == "early\n":
+                        break
+                    time.sleep(0.01)
+
+                self.assertTrue(output_path.exists())
+                self.assertEqual(output_path.read_text(), "early\n")
+                self.assertTrue(thread.is_alive())
+            finally:
+                release_path.touch()
+                thread.join(timeout=5)
+
+            self.assertFalse(thread.is_alive())
+            if errors:
+                raise errors[0]
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].stdout, "early\nlate\n")
+            self.assertEqual(output_path.read_text(), "early\nlate\n")
+
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
     def test_command_builder_tmux_reads_output_before_command_finishes(self):
         session_name = f"pyrun-test-{os.getpid()}-read"

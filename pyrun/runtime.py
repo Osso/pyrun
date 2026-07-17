@@ -1920,15 +1920,21 @@ class CommandBuilder:
         return result.stdout
 
     def stderr_to_file(self, path: str | os.PathLike[str]) -> CommandResult:
-        result = self._capture_run()
+        result = self._copy(output_path=None)._capture_run()
+        if self.output_path is not None:
+            write_text_file(self.output_path, result.stdout)
         write_text_file(self._resolve(path), result.stderr)
         return result
 
     def combined_to_file(
         self, path: str | os.PathLike[str], timeout: float | None = None
     ) -> CommandResult:
-        result = self._run(merge_stderr=True, timeout=self._effective_timeout(timeout))
+        result = self._copy(output_path=None)._run(
+            merge_stderr=True, timeout=self._effective_timeout(timeout)
+        )
         self._record_result(result)
+        if self.output_path is not None:
+            write_text_file(self.output_path, result.stdout)
         write_text_file(self._resolve(path), result.stdout)
         return result
 

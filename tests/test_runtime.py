@@ -926,6 +926,19 @@ d.cleanup()
             self.assertEqual(results[0].stdout, "early\n")
             self.assertEqual(tee_path.read_text(), "early\n")
 
+    def test_command_builder_tee_replaces_existing_output_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            result = (
+                CommandBuilder(session, sys.executable)("-c", "print('out')")
+                .output("unused.txt")
+                .tee("tee.txt")
+            )
+
+            self.assertFalse(Path(tmp, "unused.txt").exists())
+            self.assertEqual(Path(tmp, "tee.txt").read_text(), "out\n")
+            self.assertEqual(result.stdout, "out\n")
+
     @unittest.skipUnless(Path("/dev/full").exists(), "/dev/full is required")
     def test_command_builder_output_write_failure_still_drains_child(self):
         builder = CommandBuilder(Session(), sys.executable)(
@@ -938,6 +951,29 @@ d.cleanup()
 
         self.assertEqual(raised.exception.errno, 28)
         self.assertLess(time.monotonic() - started_at, 1)
+
+    def test_command_builder_timeout_is_not_masked_by_output_close_failure(self):
+        class CloseFailingOutput:
+            def write(self, content):
+                return len(content)
+
+            def flush(self):
+                return None
+
+            def close(self):
+                raise OSError("close failed")
+
+        builder = CommandBuilder(Session(), sys.executable)(
+            "-c", "import time; time.sleep(1)"
+        ).output("unused.txt")
+
+        original_open = Path.open
+        Path.open = lambda *_args, **_kwargs: CloseFailingOutput()
+        try:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                builder.capture().run(timeout=0.05)
+        finally:
+            Path.open = original_open
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
     def test_command_builder_tmux_reads_output_before_command_finishes(self):

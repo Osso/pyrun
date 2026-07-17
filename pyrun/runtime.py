@@ -1933,7 +1933,7 @@ class CommandBuilder:
         return result
 
     def tee(self, path: str | os.PathLike[str]) -> CommandResult:
-        result = self._capture_run()
+        result = self._copy(output_path=None)._capture_run()
         write_text_file(self._resolve(path), result.stdout)
         return result
 
@@ -2090,11 +2090,12 @@ class CommandBuilder:
                 stderr="" if merge_stderr else "".join(stderr_chunks),
             )
         finally:
+            pending_error = sys.exception()
             if output_file is not None:
                 try:
                     output_file.close()
                 except OSError:
-                    if not output_errors:
+                    if pending_error is None and not output_errors:
                         raise
 
     def _run_forwarded(

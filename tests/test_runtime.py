@@ -941,6 +941,85 @@ d.cleanup()
             self.assertEqual(Path(tmp, "tee.txt").read_text(), "out\n")
             self.assertEqual(result.stdout, "out\n")
 
+    def test_command_builder_stderr_file_helper_keeps_composed_output_completion_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            side_path = Path(tmp, "side.txt")
+            stderr_path = Path(tmp, "stderr.txt")
+            release_path = Path(tmp, "release")
+            results = []
+
+            def run_command():
+                results.append(
+                    CommandBuilder(session, sys.executable)(
+                        "-c",
+                        "import pathlib, sys, time\n"
+                        "print('out', flush=True)\n"
+                        "print('err', file=sys.stderr, flush=True)\n"
+                        "release = pathlib.Path('release')\n"
+                        "while not release.exists():\n"
+                        "    time.sleep(0.01)\n",
+                    )
+                    .output("side.txt")
+                    .stderr_to_file("stderr.txt")
+                )
+
+            thread = threading.Thread(target=run_command, daemon=True)
+            thread.start()
+            try:
+                time.sleep(0.1)
+                self.assertTrue(thread.is_alive())
+                self.assertFalse(side_path.exists())
+                self.assertFalse(stderr_path.exists())
+            finally:
+                release_path.touch()
+                thread.join(timeout=5)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(results[0].stdout, "out\n")
+            self.assertEqual(results[0].stderr, "err\n")
+            self.assertEqual(side_path.read_text(), "out\n")
+            self.assertEqual(stderr_path.read_text(), "err\n")
+
+    def test_command_builder_combined_file_helper_keeps_composed_output_completion_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            side_path = Path(tmp, "side.txt")
+            combined_path = Path(tmp, "combined.txt")
+            release_path = Path(tmp, "release")
+            results = []
+
+            def run_command():
+                results.append(
+                    CommandBuilder(session, sys.executable)(
+                        "-c",
+                        "import pathlib, sys, time\n"
+                        "print('out', flush=True)\n"
+                        "print('err', file=sys.stderr, flush=True)\n"
+                        "release = pathlib.Path('release')\n"
+                        "while not release.exists():\n"
+                        "    time.sleep(0.01)\n",
+                    )
+                    .output("side.txt")
+                    .combined_to_file("combined.txt")
+                )
+
+            thread = threading.Thread(target=run_command, daemon=True)
+            thread.start()
+            try:
+                time.sleep(0.1)
+                self.assertTrue(thread.is_alive())
+                self.assertFalse(side_path.exists())
+                self.assertFalse(combined_path.exists())
+            finally:
+                release_path.touch()
+                thread.join(timeout=5)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(results[0].stdout, "out\nerr\n")
+            self.assertEqual(side_path.read_text(), "out\nerr\n")
+            self.assertEqual(combined_path.read_text(), "out\nerr\n")
+
     @unittest.skipUnless(Path("/dev/full").exists(), "/dev/full is required")
     def test_command_builder_output_write_failure_still_drains_child(self):
         builder = CommandBuilder(Session(), sys.executable)(

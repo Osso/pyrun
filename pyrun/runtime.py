@@ -1933,7 +1933,9 @@ class CommandBuilder:
         return result
 
     def tee(self, path: str | os.PathLike[str]) -> CommandResult:
-        return self.output(path)._capture_run()
+        result = self._capture_run()
+        write_text_file(self._resolve(path), result.stdout)
+        return result
 
     def stderr_tee(self, path: str | os.PathLike[str]) -> CommandResult:
         return self.stderr_to_file(path)
@@ -1982,8 +1984,6 @@ class CommandBuilder:
             exit_code=completed.returncode,
             upstream_results=upstream_results,
         )
-        if self.output_path is not None:
-            write_text_file(self.output_path, result.stdout)
         return result
 
     def _capture_run(self, timeout: float | None = None) -> CommandResult:
@@ -2001,19 +2001,18 @@ class CommandBuilder:
             exit_code=completed.returncode,
             upstream_results=upstream_results,
         )
-        if self.output_path is not None:
-            write_text_file(self.output_path, result.stdout)
         return result
 
     def _run_streaming(
         self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
-        with contextlib.ExitStack() as resources:
-            output_file: io.TextIOWrapper | None = None
-            if self.output_path is not None:
-                self.output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_file = resources.enter_context(self.output_path.open("w"))
+        output_file: io.TextIOWrapper | None = None
+        output_errors: list[OSError] = []
+        if self.output_path is not None:
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_file = self.output_path.open("w")
 
+        try:
             process = subprocess.Popen(
                 [self.program, *self.args],
                 stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
@@ -2038,12 +2037,18 @@ class CommandBuilder:
             ) -> None:
                 if stream is None:
                     return
-                for chunk in iter(lambda: stream.read(1), ""):
-                    sink.append(chunk)
-                    if output is not None:
-                        output.write(chunk)
-                        output.flush()
-                stream.close()
+                try:
+                    for chunk in iter(lambda: stream.read(1), ""):
+                        sink.append(chunk)
+                        if output is not None:
+                            try:
+                                output.write(chunk)
+                                output.flush()
+                            except OSError as error:
+                                output_errors.append(error)
+                                output = None
+                finally:
+                    stream.close()
 
             threads: list[threading.Thread] = []
             if process.stdout is not None:
@@ -2076,12 +2081,21 @@ class CommandBuilder:
                 ) from exc
             for thread in threads:
                 thread.join()
+            if output_errors:
+                raise output_errors[0]
             return subprocess.CompletedProcess(
                 args=command,
                 returncode=returncode,
                 stdout="".join(stdout_chunks),
                 stderr="" if merge_stderr else "".join(stderr_chunks),
             )
+        finally:
+            if output_file is not None:
+                try:
+                    output_file.close()
+                except OSError:
+                    if not output_errors:
+                        raise
 
     def _run_forwarded(
         self, stdin: str | None, timeout: float | None = None

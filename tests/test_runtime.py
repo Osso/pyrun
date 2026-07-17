@@ -892,6 +892,53 @@ d.cleanup()
             self.assertEqual(results[0].stdout, "early\nlate\n")
             self.assertEqual(output_path.read_text(), "early\nlate\n")
 
+    def test_command_builder_tee_remains_completion_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session = Session(cwd=Path(tmp))
+            tee_path = Path(tmp, "tee.txt")
+            release_path = Path(tmp, "release")
+            results = []
+
+            def run_command():
+                results.append(
+                    CommandBuilder(session, sys.executable)(
+                        "-c",
+                        "import pathlib, time\n"
+                        "print('early', flush=True)\n"
+                        "release = pathlib.Path('release')\n"
+                        "while not release.exists():\n"
+                        "    time.sleep(0.01)\n",
+                    ).tee("tee.txt")
+                )
+
+            thread = threading.Thread(target=run_command, daemon=True)
+            thread.start()
+            try:
+                time.sleep(0.1)
+                self.assertTrue(thread.is_alive())
+                self.assertFalse(tee_path.exists())
+            finally:
+                release_path.touch()
+                thread.join(timeout=5)
+
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].stdout, "early\n")
+            self.assertEqual(tee_path.read_text(), "early\n")
+
+    @unittest.skipUnless(Path("/dev/full").exists(), "/dev/full is required")
+    def test_command_builder_output_write_failure_still_drains_child(self):
+        builder = CommandBuilder(Session(), sys.executable)(
+            "-c", "import sys; sys.stdout.write('x' * (2 * 1024 * 1024)); sys.stdout.flush()"
+        )
+
+        started_at = time.monotonic()
+        with self.assertRaises(OSError) as raised:
+            builder.output("/dev/full").capture().run(timeout=2)
+
+        self.assertEqual(raised.exception.errno, 28)
+        self.assertLess(time.monotonic() - started_at, 1)
+
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
     def test_command_builder_tmux_reads_output_before_command_finishes(self):
         session_name = f"pyrun-test-{os.getpid()}-read"

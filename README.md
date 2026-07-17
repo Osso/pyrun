@@ -354,9 +354,10 @@ existing `CommandResult`, or plain `str`/`bytes`. Builder and stream sources run
 when the downstream command runs. `stdin_from(...)` remains as a legacy alias.
 Upstream non-zero exits do not raise by default; the downstream
 `CommandResult.upstream_results` tuple records upstream
-`stdout`, `stderr`, and `exit_code` evidence. `.output(path)` writes captured
-stdout after `.run()` or `.spawn().wait()`; the path resolves against the session
-cwd and the result remains available in `stdout`.
+`stdout`, `stderr`, and `exit_code` evidence. `.output(path).run()` truncates the
+resolved path before process output begins and writes stdout incrementally while
+retaining the same text in the returned `CommandResult.stdout` when capture is
+enabled. `.spawn().wait()` keeps its completion-time file write behavior.
 
 ### tmux-backed command sessions
 

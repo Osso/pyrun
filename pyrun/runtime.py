@@ -2037,22 +2037,34 @@ class CommandBuilder:
             stderr_chunks: list[str] = []
 
             def pump(
-                stream: io.TextIOBase | None,
+                stream: io.TextIOWrapper | None,
                 sink: list[str],
                 output: io.TextIOWrapper | None = None,
             ) -> None:
                 if stream is None:
                     return
+                decoder = io.IncrementalNewlineDecoder(
+                    codecs.getincrementaldecoder(stream.encoding)(errors=stream.errors or "strict"),
+                    translate=True,
+                )
+
+                def emit(chunk: str) -> None:
+                    nonlocal output
+                    if not chunk:
+                        return
+                    sink.append(chunk)
+                    if output is not None:
+                        try:
+                            output.write(chunk)
+                            output.flush()
+                        except OSError as error:
+                            output_errors.append(error)
+                            output = None
+
                 try:
-                    for chunk in iter(lambda: stream.read(1), ""):
-                        sink.append(chunk)
-                        if output is not None:
-                            try:
-                                output.write(chunk)
-                                output.flush()
-                            except OSError as error:
-                                output_errors.append(error)
-                                output = None
+                    for data in iter(lambda: stream.buffer.read1(64 * 1024), b""):
+                        emit(decoder.decode(data))
+                    emit(decoder.decode(b"", final=True))
                 finally:
                     stream.close()
 

@@ -757,6 +757,31 @@ d.cleanup()
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, "HELLO FROM STDIN")
 
+    def test_command_builder_drains_output_while_writing_large_stdin(self):
+        input_size = 256 * 1024
+        output_size = 512 * 1024
+        payload = "i" * input_size
+        result = (
+            CommandBuilder(Session(), sys.executable)(
+                "-c",
+                "import signal, sys\n"
+                "signal.alarm(2)\n"
+                f"sys.stdout.write('o' * {output_size})\n"
+                "sys.stdout.flush()\n"
+                "data = sys.stdin.read()\n"
+                "sys.stdout.write(str(len(data)))\n",
+            )
+            .input(payload)
+            .capture()
+            .run()
+        )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(len(result.stdout), output_size + len(str(input_size)))
+        self.assertTrue(result.stdout.startswith("o" * output_size))
+        self.assertTrue(result.stdout.endswith(str(input_size)))
+
     def test_command_builder_env_override_is_visible_to_child(self):
         result = (
             CommandBuilder(Session(), sys.executable)(

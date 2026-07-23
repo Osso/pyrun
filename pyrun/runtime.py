@@ -2033,10 +2033,6 @@ class CommandBuilder:
                 env=self._subprocess_env(),
                 shell=False,
             )
-            if stdin is not None and process.stdin is not None:
-                process.stdin.write(stdin)
-                process.stdin.close()
-
             stdout_chunks: list[str] = []
             stderr_chunks: list[str] = []
 
@@ -2075,6 +2071,10 @@ class CommandBuilder:
                 )
                 thread.start()
                 threads.append(thread)
+            if stdin is not None and process.stdin is not None:
+                process.stdin.write(stdin)
+                process.stdin.close()
+
             command = [self.program, *self.args]
             try:
                 returncode = process.wait(timeout=timeout)

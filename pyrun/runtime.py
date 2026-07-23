@@ -33,9 +33,6 @@ from collections.abc import Callable
 from typing import Any
 
 
-DEFAULT_COMMAND_TIMEOUT_SECONDS = 300
-
-
 class TextNamespace:
     def lines(
         self, value: Any, start: int | None = None, end: int | None = None
@@ -1819,7 +1816,7 @@ class CommandBuilder:
     env_overrides: dict[str, str] = field(default_factory=dict)
     stdin_source: CommandStream | CommandResult | None = None
     inherit_env: bool = True
-    timeout_seconds: float | None = DEFAULT_COMMAND_TIMEOUT_SECONDS
+    timeout_seconds: float | None = None
     output_path: Path | None = None
     tmux_name: str | None = None
     capture_result: bool = False
@@ -2042,12 +2039,7 @@ class CommandBuilder:
         return result
 
     def _run_streaming(
-        self,
-        stdin: str | None,
-        merge_stderr: bool,
-        timeout: float | None = None,
-        on_stdout_chunk: Callable[[str], None] | None = None,
-        on_stderr_chunk: Callable[[str], None] | None = None,
+        self, stdin: str | None, merge_stderr: bool, timeout: float | None = None
     ) -> tuple[subprocess.CompletedProcess[str], OSError | None]:
         output_file: io.TextIOWrapper | None = None
         output_errors: list[OSError] = []
@@ -2066,6 +2058,10 @@ class CommandBuilder:
                 env=self._subprocess_env(),
                 shell=False,
             )
+            if stdin is not None and process.stdin is not None:
+                process.stdin.write(stdin)
+                process.stdin.close()
+
             stdout_chunks: list[str] = []
             stderr_chunks: list[str] = []
 
@@ -2073,7 +2069,6 @@ class CommandBuilder:
                 stream: io.TextIOBase | None,
                 sink: list[str],
                 output: io.TextIOWrapper | None = None,
-                on_chunk: Callable[[str], None] | None = None,
             ) -> None:
                 if stream is None:
                     return
@@ -2087,8 +2082,6 @@ class CommandBuilder:
                             except OSError as error:
                                 output_errors.append(error)
                                 output = None
-                        if on_chunk is not None:
-                            on_chunk(chunk)
                 finally:
                     stream.close()
 
@@ -2096,23 +2089,17 @@ class CommandBuilder:
             if process.stdout is not None:
                 thread = threading.Thread(
                     target=pump,
-                    args=(process.stdout, stdout_chunks, output_file, on_stdout_chunk),
+                    args=(process.stdout, stdout_chunks, output_file),
                     daemon=True,
                 )
                 thread.start()
                 threads.append(thread)
             if not merge_stderr and process.stderr is not None:
                 thread = threading.Thread(
-                    target=pump,
-                    args=(process.stderr, stderr_chunks, None, on_stderr_chunk),
-                    daemon=True,
+                    target=pump, args=(process.stderr, stderr_chunks), daemon=True
                 )
                 thread.start()
                 threads.append(thread)
-            if stdin is not None and process.stdin is not None:
-                process.stdin.write(stdin)
-                process.stdin.close()
-
             command = [self.program, *self.args]
             try:
                 returncode = process.wait(timeout=timeout)
@@ -2148,20 +2135,13 @@ class CommandBuilder:
     def _run_forwarded(
         self, stdin: str | None, timeout: float | None = None
     ) -> subprocess.CompletedProcess[str]:
-        def forward(writer: Any) -> Callable[[str], None]:
-            def write(chunk: str) -> None:
-                writer.write(chunk)
-                writer.flush()
-
-            return write
-
         completed, output_error = self._run_streaming(
-            stdin,
-            merge_stderr=False,
-            timeout=timeout,
-            on_stdout_chunk=forward(sys.stdout),
-            on_stderr_chunk=forward(sys.stderr),
+            stdin, merge_stderr=False, timeout=timeout
         )
+        sys.stdout.write(completed.stdout)
+        sys.stdout.flush()
+        sys.stderr.write(completed.stderr)
+        sys.stderr.flush()
         if output_error is not None:
             raise output_error
         return completed

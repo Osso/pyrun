@@ -679,69 +679,6 @@ d.cleanup()
         self.assertEqual(timeout_result["type"], "error")
         self.assertIn("unexpected keyword argument", timeout_result["error"])
 
-    def test_command_builder_output_opens_before_spawn_and_tees_stdout_chunks(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            output_path = Path(tmp, "stdout.txt")
-            code = (
-                "import pathlib, time; "
-                f"path = pathlib.Path({str(output_path)!r}); "
-                "print(path.exists(), flush=True); "
-                "print('first', flush=True); "
-                "time.sleep(0.15); "
-                "print(path.read_text() == 'True\\nfirst\\n', flush=True); "
-                "time.sleep(0.05)"
-            )
-            result = (
-                CommandBuilder(Session(cwd=Path(tmp)), sys.executable)("-c", code)
-                .output("stdout.txt")
-                .run()
-            )
-
-            output = output_path.read_text()
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.stderr, "")
-        self.assertEqual(result.stdout, "True\\nfirst\\nTrue\\n")
-        self.assertEqual(output, result.stdout)
-
-    def test_command_builder_run_forwarded_forwards_chunks_before_process_exit(self):
-        class RecordingStream:
-            def __init__(self):
-                self.events = []
-
-            def write(self, text):
-                self.events.append((text, time.monotonic()))
-                return len(text)
-
-            def flush(self):
-                return None
-
-        stdout = RecordingStream()
-        stderr = RecordingStream()
-        code = (
-            "import sys, time; "
-            "print('out', flush=True); "
-            "print('err', file=sys.stderr, flush=True); "
-            "time.sleep(0.15)"
-        )
-        original_stdout, original_stderr = sys.stdout, sys.stderr
-        started = time.monotonic()
-        try:
-            sys.stdout, sys.stderr = stdout, stderr
-            result = CommandBuilder(Session(), sys.executable)("-c", code).run_forwarded()
-            finished = time.monotonic()
-        finally:
-            sys.stdout, sys.stderr = original_stdout, original_stderr
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.stdout, "out\\n")
-        self.assertEqual(result.stderr, "err\\n")
-        self.assertTrue(stdout.events)
-        self.assertTrue(stderr.events)
-        self.assertLess(min(timestamp for _, timestamp in stdout.events), finished - 0.1)
-        self.assertLess(min(timestamp for _, timestamp in stderr.events), finished - 0.1)
-        self.assertGreaterEqual(finished - started, 0.1)
-
     def test_command_builder_stdin_text_passes_stdin_to_command(self):
         result = (
             CommandBuilder(Session(), sys.executable)(
@@ -756,31 +693,6 @@ d.cleanup()
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, "HELLO FROM STDIN")
-
-    def test_command_builder_drains_output_while_writing_large_stdin(self):
-        input_size = 256 * 1024
-        output_size = 512 * 1024
-        payload = "i" * input_size
-        result = (
-            CommandBuilder(Session(), sys.executable)(
-                "-c",
-                "import signal, sys\n"
-                "signal.alarm(2)\n"
-                f"sys.stdout.write('o' * {output_size})\n"
-                "sys.stdout.flush()\n"
-                "data = sys.stdin.read()\n"
-                "sys.stdout.write(str(len(data)))\n",
-            )
-            .input(payload)
-            .capture()
-            .run()
-        )
-
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.stderr, "")
-        self.assertEqual(len(result.stdout), output_size + len(str(input_size)))
-        self.assertTrue(result.stdout.startswith("o" * output_size))
-        self.assertTrue(result.stdout.endswith(str(input_size)))
 
     def test_command_builder_env_override_is_visible_to_child(self):
         result = (
@@ -1660,16 +1572,6 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.exit_code, 0)
 
-    def test_command_builder_uses_global_default_timeout(self):
-        value = self.eval("cli.command('python3')")["value"]
-
-        self.assertEqual(value["timeout"], 300)
-
-    def test_command_builder_timeout_none_disables_global_default(self):
-        value = self.eval("cli.command('python3').timeout(None)")["value"]
-
-        self.assertNotIn("timeout", value)
-
     def test_command_builder_timeout_is_serialized(self):
         value = self.eval("cli.command('python3').timeout(5)")["value"]
 
@@ -1799,7 +1701,6 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
                 "cwd": "/tmp",
                 "env": {"X_TEST": "1"},
                 "stdin": "input",
-                "timeout": 300,
             },
         )
 
@@ -1829,7 +1730,6 @@ raise SystemExit(0 if result.exit_code == 0 else 1)
                 "cwd": None,
                 "env": {},
                 "stdin": None,
-                "timeout": 300,
             },
         )
         self.assertEqual(

@@ -70,6 +70,14 @@ class JsonlProtocolTests(unittest.TestCase):
         self.assertEqual(http_builder["url"], "http://example.invalid")
         self.assertEqual(wrapped, {"wrapped": {"a": 1}})
 
+    def test_yaml_is_available_to_evaluations(self):
+        result = self.handle(
+            json.dumps({"code": "import yaml\nyaml.safe_load('enabled: true')"})
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], {"enabled": True})
+
     def test_jsonl_store_defaults_to_auto_approve_for_side_effects(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp, "note.txt")

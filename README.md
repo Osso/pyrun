@@ -5,8 +5,9 @@ Hostrun. It exists to test whether a persistent Python runtime feels better than
 Hostrun's embedded QuickJS model for host-side automation, structured command
 execution, filesystem helpers, and reusable scratch state.
 
-This is a local prototype only. It uses the Python standard library and avoids
-`shell=True` for command execution.
+This is a local prototype only. It uses the Python standard library plus the
+pinned PyYAML 6.0.3 runtime dependency and avoids `shell=True` for command
+execution. PyYAML is third-party; it is not part of Python's standard library.
 
 ## Usage
 
@@ -161,7 +162,9 @@ Available globals:
   dict rows. Dict headers are the ordered union of keys across all rows.
 - `fs.open(path, format=None)`: reads text and parses by explicit format or file
   extension for `json`, `jsonl`, `csv`, `tsv`, `txt`/`text`, and `toml` when
-  stdlib `tomllib` is available. Unsupported formats raise `ValueError`.
+  stdlib `tomllib` is available. It does not parse YAML; evaluation code can
+  import the deployed PyYAML dependency with `import yaml`. Unsupported formats
+  raise `ValueError`.
 - `tools.file.replace(path, from_or_options, to=None)`: exact text replacement.
   By default it requires exactly one match. Options dict supports `from`, `to`,
   `all`, and `occurrence`.
@@ -383,7 +386,7 @@ via `.input()`/`.stdin_from()` is unsupported for tmux commands.
 | Persistent sessions | Implemented | `SessionStore` keeps sessions keyed by `session_id`; omitted IDs use `default`. |
 | `ctx` scratch state | Implemented | Persistent dict-like object with attribute access. Python objects stay live in-process. |
 | Host cwd and `cd` | Implemented | `host.cwd()` and `host.cd(path)` persist per session; relative helpers resolve against that cwd. |
-| Filesystem helpers | Partial | Read/write/exists/remove/glob/open plus JSON, JSONL, CSV, TSV, TOML-read support. YAML is not supported with stdlib only. |
+| Filesystem helpers | Partial | Read/write/exists/remove/glob/open plus JSON, JSONL, CSV, TSV, and TOML-read support. Evaluations can import pinned PyYAML 6.0.3 as `yaml`; `fs.open` does not parse YAML. |
 | `tools.file.replace` / `patch` | Implemented | Exact replacement and unified-diff hunk application are present; deletion patches are rejected. |
 | Temporary files/directories | Implemented | `tmp.file()` and `tmp.dir()` create cleanup-capable handles; pending approval gates create/write/cleanup side effects. |
 | Command execution / builder | Partial | `run.<program>` is the preferred immediate-execution API. `cli.<program>` returns advanced builders with chainable `.cwd()`, `.input()`, `.output()`, `.env()`, `.timeout()`, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
@@ -414,15 +417,17 @@ Current stance:
 
 - The Python runtime evaluates arbitrary Python in-process in auto-approve mode.
 - Pending approval prevents helper-mediated side effects, but it is not a
-  security boundary. If arbitrary code can import stdlib modules or access
-  objects that expose `os`, `subprocess`, file descriptors, or network APIs, it
+  security boundary. If arbitrary code can import stdlib or bundled dependency
+  modules, or access objects that expose `os`, `subprocess`, file descriptors, or
+  network APIs, it
   can bypass helper approval unless the caller also restricts or sandboxes the
   execution environment.
 - The JSONL adapter and MCP stdio server default to auto-approve to match the
   spawned `hostrun-mcp` style where the outer harness owns tool-call approval.
   Library callers can still use `SessionStore.pending_approval()` when they need
   helper-level intent collection.
-- Pyrun cannot safely sandbox arbitrary Python with only the standard library.
+- Pyrun cannot safely sandbox arbitrary Python with the standard library and
+  bundled dependencies.
 
 Future sandbox options, none implemented yet:
 
@@ -446,8 +451,8 @@ Future sandbox options, none implemented yet:
 - Print output is captured as `console` lines in completed results.
 - HTTP uses stdlib `urllib.request`; no retry, cookie jar, or streaming support
   exists yet.
-- Filesystem helpers cover the first structured-data slice only. YAML is not
-  supported without a future non-stdlib decision.
+- Filesystem helpers cover the first structured-data slice only. Evaluations
+  can import pinned PyYAML 6.0.3 as `yaml`; `fs.open` does not parse YAML.
 - `fd`, `rg`, and `sqlite` are pure-Python parity wrappers, not subprocess
   facades. They intentionally cover a small Hostrun-like subset and do not
   implement full `fd`, ripgrep, or sqlite CLI behavior.
@@ -523,4 +528,5 @@ hr([{'count': 2}, {'count': 3}]).where(lambda row: row['count'] > 2).select('cou
 python -m unittest
 ```
 
-The test suite uses only the standard library.
+The test runner uses the standard-library `unittest` module; tests also
+require declared runtime dependencies such as PyYAML 6.0.3.

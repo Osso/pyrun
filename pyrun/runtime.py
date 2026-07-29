@@ -3216,7 +3216,7 @@ class SessionStore:
                 "type": "error",
                 "executed": code,
                 "console": console_history,
-                "error": str(exc),
+                "error": f"Error: {exc}",
             }
         return {
             "type": "completed",

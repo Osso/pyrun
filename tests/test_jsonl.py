@@ -114,11 +114,11 @@ class JsonlProtocolTests(unittest.TestCase):
         self.assertEqual(result["value"], {"cwd": "/repo", "model": "test/model"})
         self.assertEqual(handled, [])
 
-    def test_pi_is_absent_without_bridge(self):
-        result = self.handle(json.dumps({"code": "pi.footer.snapshot()"}))
+    def test_undefined_name_error_has_error_prefix(self):
+        result = self.handle(json.dumps({"code": "Path('note.txt')"}))
 
         self.assertEqual(result["type"], "error")
-        self.assertIn("name 'pi' is not defined", result["error"])
+        self.assertEqual(result["error"], "Error: name 'Path' is not defined")
 
     def test_complete_lines_stream_without_explicit_flush(self):
         protocol = io.StringIO()

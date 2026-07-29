@@ -50,7 +50,7 @@ into pending approval.
 or an error shape for invalid requests or evaluation failures:
 
 ```json
-{"type":"error","executed":"print('before failure')\n1 / 0","console":["before failure"],"error":"division by zero"}
+{"type":"error","executed":"print('before failure')\n1 / 0","console":["before failure"],"error":"Error: division by zero"}
 ```
 
 Set `stream_console` to `true` to receive ordered console events before the final

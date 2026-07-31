@@ -4,10 +4,11 @@ Pyrun exposes immediate `run.*` commands and configurable `cli.*` command builde
 
 ## What it must do
 
-- [x] `cli.*.run()` forwards stdout and stderr and returns the integer exit code.
+- [x] `cli.*.run()` forwards stdout and stderr after command completion and returns the integer exit code.
 - [x] `cli.*.capture().run()` suppresses forwarded output and returns a `CommandResult`.
+- [x] Commands use a 300-second default timeout; `.timeout(None)` disables it.
 - [x] Default and captured builder executions remain available through `run.history()`.
-- [x] Builder configuration such as `.cwd()`, `.env()`, `.input()`, `.output()`, and `.timeout()` composes with explicit capture.
+- [x] Builder configuration such as `.cwd()`, `.env()`, `.input()`, `.output()`, and `.timeout()` composes with explicit capture; `.output()` writes stdout while the command runs.
 - [x] Capture mode is visible when a configured builder is serialized.
 
 ## How it works

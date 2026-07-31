@@ -25,6 +25,27 @@ class RuntimeTests(unittest.TestCase):
     def eval(self, code, session_id="default"):
         return self.store.evaluate(code, session_id=session_id)
 
+    def test_from_pi_star_import_exposes_command_helpers(self):
+        result = self.eval(
+            "from pi import *\n"
+            "res = cli.git('log', '--oneline', '--all', '-20', '--', 'packages/agent-core/src/agent-loop.ts').capture().run()\n"
+            "print(res.stdout)"
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["console"], [""])
+
+    def test_from_pi_star_import_preserves_pi_bridge_access(self):
+        result = self.store.evaluate(
+            "from pi import *\npi.footer.snapshot()",
+            pi={"footer": {"cwd": "/repo"}},
+            pi_bridge=True,
+            pi_request_handler=lambda method, params: None,
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], {"cwd": "/repo"})
+
     def test_expression_eval_returns_value(self):
         result = self.eval("1 + 2")
         self.assertEqual(result["type"], "completed")

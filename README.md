@@ -151,6 +151,9 @@ ctx.count
 
 Available globals:
 
+Evaluations may also use `from pi import *` to import these helper namespaces,
+including `cli`, without changing the optional `pi` bridge object.
+
 - `ctx`: persistent dict-like object with attribute access.
 - `host.cwd()`, `host.cd(path)`.
 - `fs.read(path)`, `fs.write(path, content)`, `fs.exists(path)`,

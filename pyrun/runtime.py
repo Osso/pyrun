@@ -22,6 +22,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -469,6 +470,7 @@ class Session:
         }
         if pi is not None:
             globals_map["pi"] = pi
+        globals_map["__builtins__"] = build_eval_builtins(globals_map)
         return globals_map
 
     def require_approval(self, tool: str, summary: str, args: dict[str, Any]) -> None:
@@ -483,6 +485,29 @@ class Session:
                 "args": to_json_value(args),
             }
         )
+
+
+def build_eval_builtins(globals_map: dict[str, Any]) -> dict[str, Any]:
+    def import_module(
+        name: str,
+        import_globals: dict[str, Any] | None = None,
+        import_locals: dict[str, Any] | None = None,
+        fromlist: tuple[str, ...] | list[str] | None = (),
+        level: int = 0,
+    ) -> Any:
+        if level == 0 and name == "pi":
+            return build_pi_module(globals_map)
+        return builtins.__import__(name, import_globals, import_locals, fromlist, level)
+
+    return {**builtins.__dict__, "__import__": import_module}
+
+
+def build_pi_module(globals_map: dict[str, Any]) -> types.ModuleType:
+    module = types.ModuleType("pi")
+    exported = {name: value for name, value in globals_map.items() if not name.startswith("_")}
+    module.__dict__.update(exported)
+    module.__all__ = list(exported)
+    return module
 
 
 class Host:

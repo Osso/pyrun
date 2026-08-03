@@ -286,7 +286,9 @@ including `cli`, without changing the optional `pi` bridge object.
   such as `.cwd(path)`, `.input(source)`, `.output(path)`, `.env(...)`, and
   `.timeout(seconds)`. `.run()` forwards stdout/stderr, records the result in
   `run.history()`, and returns the integer exit code. Commands time out after 300
-  seconds by default; use `.timeout(None)` to disable the timeout. Add `.capture()`
+  seconds by default; use `.timeout(None)` to disable the timeout. On POSIX,
+  timeout cleanup terminates the command process group, including descendants
+  holding inherited output pipes. Add `.capture()`
   before `.run()` to suppress forwarding and return the full `CommandResult`.
   Piping, spawning, redirects, and inspection helpers remain available. Returning
   a builder from JSONL/session evaluation serializes it as `{program, args, cwd,

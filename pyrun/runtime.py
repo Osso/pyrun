@@ -16,6 +16,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -31,6 +32,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Callable
 from typing import Any
+
+
+def command_process_options() -> dict[str, Any]:
+    if os.name == "posix":
+        return {"start_new_session": True}
+    creation_flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    return {"creationflags": creation_flags} if creation_flags else {}
+
+
+def kill_command_process_group(process: subprocess.Popen[Any]) -> bool:
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return True
+        except ProcessLookupError:
+            return False
+
+    try:
+        process.kill()
+        return True
+    except ProcessLookupError:
+        return False
 
 
 class TextNamespace:
@@ -1992,6 +2015,7 @@ class CommandBuilder:
             cwd=self.working_dir or self.session.cwd,
             env=self._subprocess_env(),
             shell=False,
+            **command_process_options(),
         )
         return ProcessHandle(
             id=next(_process_ids),
@@ -2057,6 +2081,7 @@ class CommandBuilder:
                 cwd=self.working_dir or self.session.cwd,
                 env=self._subprocess_env(),
                 shell=False,
+                **command_process_options(),
             )
             if stdin is not None and process.stdin is not None:
                 process.stdin.write(stdin)
@@ -2104,7 +2129,7 @@ class CommandBuilder:
             try:
                 returncode = process.wait(timeout=timeout)
             except subprocess.TimeoutExpired as exc:
-                process.kill()
+                kill_command_process_group(process)
                 returncode = process.wait()
                 for thread in threads:
                     thread.join()
@@ -2830,7 +2855,7 @@ class ProcessHandle:
                 timeout=effective_timeout,
             )
         except subprocess.TimeoutExpired as exc:
-            self.process.kill()
+            kill_command_process_group(self.process)
             stdout, stderr = self.process.communicate()
             self._result = CommandResult(
                 stdout=stdout,
@@ -2859,10 +2884,7 @@ class ProcessHandle:
             write_text_file(self.output_path, self._result.stdout)
 
     def kill(self) -> bool:
-        if self.process.poll() is not None:
-            return False
-        self.process.kill()
-        return True
+        return kill_command_process_group(self.process)
 
     def text(self, timeout: float | None = None) -> str:
         return self.wait(timeout).text()

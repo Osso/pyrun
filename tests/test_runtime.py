@@ -532,6 +532,59 @@ d.cleanup()
         self.assertEqual(result["type"], "error")
         self.assertIn("unexpected keyword argument", result["error"])
 
+    @unittest.skipUnless(os.name == "posix", "process groups are POSIX-specific")
+    def test_command_builder_timeout_kills_descendants_holding_output_pipes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pid_path = Path(tmp) / "child.pid"
+            code = (
+                "import pathlib, subprocess, sys, time; "
+                f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid)); "
+                "time.sleep(30)"
+            )
+            started_at = time.monotonic()
+
+            with self.assertRaises(subprocess.TimeoutExpired):
+                CommandBuilder(Session(), sys.executable)("-c", code).capture().run(timeout=0.1)
+
+            self.assertLess(time.monotonic() - started_at, 2)
+            child_pid = int(pid_path.read_text())
+            for _ in range(20):
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"descendant process {child_pid} survived timeout cleanup")
+
+    @unittest.skipUnless(os.name == "posix", "process groups are POSIX-specific")
+    def test_process_handle_timeout_kills_descendants_holding_output_pipes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pid_path = Path(tmp) / "child.pid"
+            code = (
+                "import pathlib, subprocess, sys, time; "
+                f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                f"pathlib.Path({str(pid_path)!r}).write_text(str(child.pid)); "
+                "time.sleep(30)"
+            )
+            handle = CommandBuilder(Session(), sys.executable)("-c", code).spawn()
+
+            started_at = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                handle.wait(timeout=0.1)
+
+            self.assertLess(time.monotonic() - started_at, 2)
+            child_pid = int(pid_path.read_text())
+            for _ in range(20):
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"descendant process {child_pid} survived timeout cleanup")
+
     def test_cli_namespace_enforces_chainable_timeout(self):
         code = "import time; time.sleep(5)"
 

@@ -12,6 +12,7 @@ import glob as glob_module
 import io
 import itertools
 import json
+import math
 import os
 import re
 import shlex
@@ -710,6 +711,104 @@ def read_toml_file(path: Path) -> Any:
         return tomllib.load(handle)
 
 
+def normalize_read_web_url(url: Any) -> str:
+    if not isinstance(url, str):
+        raise ValueError(
+            "tools.read_web url must be an absolute http or https URL"
+        )
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(
+            "tools.read_web url must be an absolute http or https URL"
+        )
+    return url
+
+
+def normalize_read_web_options(options: dict[str, Any] | None) -> dict[str, Any]:
+    if options is None:
+        options = {}
+    if not isinstance(options, dict):
+        raise TypeError("tools.read_web options must be a dictionary")
+
+    allowed = {"width", "timeout", "max_chars"}
+    unsupported = sorted(str(name) for name in options if name not in allowed)
+    if unsupported:
+        raise ValueError(f"unsupported tools.read_web option: {unsupported[0]}")
+
+    normalized = {"width": 120, "timeout": 30, "max_chars": 100_000, **options}
+    normalized["width"] = positive_integer_option(normalized, "width")
+    normalized["timeout"] = positive_number_option(normalized, "timeout")
+    normalized["max_chars"] = positive_integer_option(normalized, "max_chars")
+    return normalized
+
+
+def positive_integer_option(options: dict[str, Any], name: str) -> int:
+    value = options[name]
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def positive_number_option(options: dict[str, Any], name: str) -> int | float:
+    value = options[name]
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        raise ValueError(f"{name} must be a positive number")
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a positive finite number")
+    return value
+
+
+def build_read_web_command(
+    session: Session, url: str, width: int, timeout: int | float
+) -> CommandBuilder:
+    return (
+        CommandBuilder(session, "w3m")(
+            "-dump",
+            "-cols",
+            str(width),
+            "-s",
+            "-O",
+            "UTF-8",
+            "-no-cookie",
+            "-o",
+            "display_link_number=true",
+            url,
+        )
+        .timeout(timeout)
+        .capture()
+    )
+
+
+def execute_read_web_command(
+    command: CommandBuilder, url: str, timeout: int | float
+) -> CommandResult:
+    try:
+        result = command.run()
+    except FileNotFoundError as error:
+        raise RuntimeError("tools.read_web requires the w3m executable") from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(
+            f"tools.read_web timed out after {timeout} seconds while reading {url}"
+        ) from error
+
+    assert isinstance(result, CommandResult)
+    if result.exit_code != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no error output"
+        raise RuntimeError(
+            f"tools.read_web failed to read {url}: {detail} "
+            f"(w3m exit code {result.exit_code})"
+        )
+    return result
+
+
+def web_page_from_text(url: str, content: str, max_chars: int) -> AttrDict:
+    return AttrDict(
+        url=url,
+        text=content[:max_chars],
+        truncated=len(content) > max_chars,
+    )
+
+
 class Tools:
     def __init__(self, session: Session) -> None:
         self._session = session
@@ -718,6 +817,25 @@ class Tools:
         self.github = GithubTools(session)
         self.tmux = TmuxTools(session)
         self.browser = BrowserTools(session)
+
+    def read_web(
+        self, url: str, options: dict[str, Any] | None = None
+    ) -> AttrDict:
+        normalized_url = normalize_read_web_url(url)
+        normalized_options = normalize_read_web_options(options)
+        self._session.require_approval(
+            "tools.read_web",
+            f"Read web page {normalized_url}",
+            {"url": normalized_url, "options": normalized_options},
+        )
+        width = normalized_options["width"]
+        timeout = normalized_options["timeout"]
+        max_chars = normalized_options["max_chars"]
+        command = build_read_web_command(
+            self._session, normalized_url, width, timeout
+        )
+        result = execute_read_web_command(command, normalized_url, timeout)
+        return web_page_from_text(normalized_url, result.stdout, max_chars)
 
     def sudo(self, command: CommandBuilder) -> CommandBuilder:
         if not isinstance(command, CommandBuilder):

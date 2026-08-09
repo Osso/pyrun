@@ -8,6 +8,8 @@ execution, filesystem helpers, and reusable scratch state.
 This is a local prototype only. It uses the Python standard library plus the
 pinned PyYAML 6.0.3 runtime dependency and avoids `shell=True` for command
 execution. PyYAML is third-party; it is not part of Python's standard library.
+`tools.read_web` also requires the external `w3m` executable; the Python package
+does not install it.
 
 ## Usage
 
@@ -154,8 +156,8 @@ Pending mode allows read-only helpers and session-local state changes such as
 raise internally and are caught by `SessionStore.evaluate`, which returns a
 `needs_approval` result. Gated tools include `fs.write`, structured fs writers,
 `fs.remove`, `tools.file.replace/patch` writes, command `.run()`/`.spawn()`, HTTP
-request execution, HTTP downloads, and temporary file/directory create, write,
-and cleanup operations.
+request execution, `tools.read_web`, HTTP downloads, and temporary file/directory
+create, write, and cleanup operations.
 
 ```python
 ctx.count = 1
@@ -202,6 +204,16 @@ including `cli`, without changing the optional `pi` bridge object.
   shared default `headers`. Client methods match global HTTP helpers. Relative
   URLs join against `base_url`; per-request headers override or extend session
   headers.
+- `tools.read_web(url, options=None)`: uses external `w3m` to read static
+  `http://` or `https://` pages as bounded text with numbered link references
+  such as `[1] label` and `[1] URL` lines. Defaults are `width=120`,
+  `timeout=30`, and `max_chars=100000`. The returned object exposes `url`,
+  `text`, and `truncated` through attribute access. Only `width`, `timeout`, and
+  `max_chars` are accepted; caller headers, JavaScript, authentication,
+  Chromium fallback, and other protocols are not supported. `tools.read_web`
+  requests helper approval before it runs; auto-approve sessions execute it,
+  while pending mode returns `needs_approval`. Invalid URLs/options, missing
+  `w3m`, timeouts, and failed navigation become evaluation errors.
 - `fd.find(pattern='.', options=None)`: pure-Python file discovery under
   `options.root` or the session cwd. Returns paths relative to the session cwd
   unless `absolute_path` is true. Options: `root`, `type` (`file` or
@@ -416,6 +428,7 @@ via `.input()`/`.stdin_from()` is unsupported for tmux commands.
 | Command execution / builder | Partial | `run.<program>` is the preferred immediate-execution API. `cli.<program>` returns advanced builders with chainable `.cwd()`, `.input()`, `.output()`, `.env()`, `.timeout()`, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
 | Spawn and pipeline helpers | Partial | `.spawn()` returns process handles; tmux-backed handles reuse persistent named sessions and queue sequentially, but capture terminal-combined output and reject composed stdin. Pipeline helpers are capture-then-feed composition, not OS pipe FD streaming. |
 | HTTP and sessions | Partial | Stdlib `urllib` request builders, response helpers, `to_file`, base URL, and shared headers exist. No retry, cookie jar, TLS option, or streaming support yet. |
+| `tools.read_web` | Partial | Uses external `w3m` for static HTTP/HTTPS text extraction with numbered link references. Requires `w3m`; no JavaScript, authenticated Chromium, fallback, or caller headers. |
 | `rg`, `fd`, and `sqlite` wrappers | Partial | Pure-Python subsets cover common search/discovery/query flows; they are not full CLI-compatible facades. |
 | `kubectl` wrapper | Implemented | Builds `kubectl get` argv with namespace, selector, all-namespaces, name, and output options. |
 | Tool wrappers | Partial | Thin builders exist for sudo/authsudo, PowerShell, SSH, browser-cli, git, GitHub, and tmux. They do not install/probe tools and most return builders until `.run()`/`.text()`/`.json()`. |
@@ -474,7 +487,8 @@ Future sandbox options, none implemented yet:
 - Statement evaluation returns the final trailing expression when present.
 - Print output is captured as `console` lines in completed results.
 - HTTP uses stdlib `urllib.request`; no retry, cookie jar, or streaming support
-  exists yet.
+  exists yet. `tools.read_web` is a separate `w3m`-backed static-page reader with
+  fixed browser-style defaults and no JavaScript/authenticated Chromium path.
 - Filesystem helpers cover the first structured-data slice only. Evaluations
   can import pinned PyYAML 6.0.3 as `yaml`; `fs.open` does not parse YAML.
 - `fd`, `rg`, and `sqlite` are pure-Python parity wrappers, not subprocess
@@ -515,6 +529,15 @@ http.get('http://127.0.0.1:8000/status').text()
 http.post('http://127.0.0.1:8000/items', {'json': {'name': 'apple'}}).json()
 client = http.session({'base_url': 'http://127.0.0.1:8000', 'headers': {'X-App': 'pyrun'}})
 client.get('/status', {'headers': {'X-Trace': '1'}}).json()
+
+page = tools.read_web('https://example.com/article')
+page.url
+page.text
+page.truncated
+short_page = tools.read_web(
+    'https://example.com/article',
+    {'width': 100, 'timeout': 10, 'max_chars': 20_000},
+)
 
 fd.find('*.py', {'root': 'src', 'glob': True, 'extension': 'py'})
 fd.files('src')

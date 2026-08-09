@@ -18,6 +18,24 @@ ROOT = Path(__file__).resolve().parents[1]
 from pyrun.runtime import CommandBuilder, Session, SessionStore, Tools
 
 
+@contextlib.contextmanager
+def isolated_executable_path(path):
+    original_path = os.environ.get("PATH")
+    os.environ["PATH"] = str(path)
+    try:
+        yield
+    finally:
+        if original_path is None:
+            del os.environ["PATH"]
+        else:
+            os.environ["PATH"] = original_path
+
+
+def write_python_executable(path: Path, source: str) -> None:
+    path.write_text(f"#!{sys.executable}\n{source}")
+    path.chmod(0o755)
+
+
 class RuntimeTests(unittest.TestCase):
     def setUp(self):
         self.store = SessionStore()
@@ -130,6 +148,144 @@ class RuntimeTests(unittest.TestCase):
                 result["approval"]["args"]["path"], str(Path(tmp, "note.txt"))
             )
             self.assertFalse(Path(tmp, "note.txt").exists())
+
+    def test_pending_approval_read_web_returns_needs_approval_without_fetching(self):
+        store = SessionStore.pending_approval()
+        result = store.evaluate(
+            "tools.read_web('https://example.test/page', "
+            "{'width': 100, 'timeout': 5, 'max_chars': 2000})"
+        )
+
+        self.assertEqual(result["type"], "needs_approval")
+        self.assertEqual(result["approval"]["tool"], "tools.read_web")
+        self.assertEqual(
+            result["approval"]["args"],
+            {
+                "url": "https://example.test/page",
+                "options": {"width": 100, "timeout": 5, "max_chars": 2000},
+            },
+        )
+
+    def test_pending_approval_read_web_includes_default_options(self):
+        store = SessionStore.pending_approval()
+        result = store.evaluate("tools.read_web('https://example.test/page')")
+
+        self.assertEqual(result["type"], "needs_approval")
+        self.assertEqual(
+            result["approval"]["args"]["options"],
+            {"width": 120, "timeout": 30, "max_chars": 100_000},
+        )
+
+    def test_read_web_uses_requested_timeout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_python_executable(
+                Path(tmp, "w3m"), "import time\ntime.sleep(0.2)\n"
+            )
+            with isolated_executable_path(tmp):
+                result = self.eval(
+                    "tools.read_web('https://example.test/page', "
+                    "{'timeout': 0.01})"
+                )
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn(
+            "tools.read_web timed out after 0.01 seconds while reading "
+            "https://example.test/page",
+            result["error"],
+        )
+
+    def test_read_web_rejects_invalid_options_before_execution(self):
+        cases = [
+            ({"width": 0}, "width must be a positive integer"),
+            ({"width": True}, "width must be a positive integer"),
+            ({"timeout": 0}, "timeout must be a positive number"),
+            ({"timeout": False}, "timeout must be a positive number"),
+            ({"max_chars": 0}, "max_chars must be a positive integer"),
+            ({"max_chars": 1.5}, "max_chars must be a positive integer"),
+            ({"unexpected": 1}, "unsupported tools.read_web option: unexpected"),
+            ("invalid", "tools.read_web options must be a dictionary"),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp, "executed")
+            write_python_executable(
+                Path(tmp, "w3m"),
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('ran')\n",
+            )
+            with isolated_executable_path(tmp):
+                for options, expected_error in cases:
+                    with self.subTest(options=options):
+                        result = self.eval(
+                            "tools.read_web('https://example.test/page', "
+                            f"{options!r})"
+                        )
+                        self.assertEqual(result["type"], "error")
+                        self.assertIn(expected_error, result["error"])
+                        self.assertFalse(marker.exists())
+                for timeout_expression in ("float('nan')", "float('inf')"):
+                    with self.subTest(timeout=timeout_expression):
+                        result = self.eval(
+                            "tools.read_web('https://example.test/page', "
+                            f"{{'timeout': {timeout_expression}}})"
+                        )
+                        self.assertEqual(result["type"], "error")
+                        self.assertIn(
+                            "timeout must be a positive finite number",
+                            result["error"],
+                        )
+                        self.assertFalse(marker.exists())
+
+    def test_read_web_rejects_non_web_urls_before_execution(self):
+        urls = ["", "example.test/page", "file:///etc/passwd", 123]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp, "executed")
+            write_python_executable(
+                Path(tmp, "w3m"),
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('ran')\n",
+            )
+            with isolated_executable_path(tmp):
+                for url in urls:
+                    with self.subTest(url=url):
+                        result = self.eval(f"tools.read_web({url!r})")
+                        self.assertEqual(result["type"], "error")
+                        self.assertIn(
+                            "tools.read_web url must be an absolute http or https URL",
+                            result["error"],
+                        )
+                        self.assertFalse(marker.exists())
+
+    def test_read_web_reports_missing_w3m_dependency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with isolated_executable_path(tmp):
+                result = self.eval("tools.read_web('https://example.test/page')")
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn(
+            "tools.read_web requires the w3m executable",
+            result["error"],
+        )
+
+    def test_read_web_reports_w3m_navigation_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_python_executable(
+                Path(tmp, "w3m"),
+                "import sys\n"
+                "print('unable to load page', file=sys.stderr)\n"
+                "raise SystemExit(7)\n",
+            )
+            with isolated_executable_path(tmp):
+                result = self.eval("tools.read_web('https://example.test/page')")
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn(
+            "tools.read_web failed to read https://example.test/page",
+            result["error"],
+        )
+        self.assertIn("unable to load page", result["error"])
+        self.assertIn("exit code 7", result["error"])
 
     def test_pending_approval_command_run_returns_needs_approval_without_execution(
         self,
@@ -2267,7 +2423,35 @@ item = {'name': 'apple', 'count': 2, 'meta': {'rank': 3}}
 
 
 class LocalHttpHandler(BaseHTTPRequestHandler):
+    last_request_headers = {}
+
     def do_GET(self):
+        type(self).last_request_headers = dict(self.headers.items())
+        if self.path == "/read-web-plain":
+            body = b"alpha\nbeta\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path in {"/read-web", "/read-web-long", "/read-web-width"}:
+            if self.path == "/read-web":
+                body = (
+                    b"<!doctype html><html><head><title>Reader page</title></head>"
+                    b"<body><h1>Reader heading</h1>"
+                    b'<p>Hello <a href="/next">linked world</a>.</p></body></html>'
+                )
+            elif self.path == "/read-web-long":
+                body = b"<html><body><p>abcdefghij</p></body></html>"
+            else:
+                body = b"<html><body><p>one two three four five</p></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/json":
             self.send_response(201)
             self.send_header("Content-Type", "application/json")
@@ -2326,6 +2510,69 @@ class LocalHttpHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         return
+
+
+class ReadWebTests(unittest.TestCase):
+    def setUp(self):
+        self.store = SessionStore()
+        LocalHttpHandler.last_request_headers = {}
+        self.server = HTTPServer(("127.0.0.1", 0), LocalHttpHandler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.base_url = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.thread.join(timeout=5)
+        self.server.server_close()
+
+    def eval(self, code):
+        return self.store.evaluate(code)
+
+    def test_read_web_renders_html_with_links_and_browser_headers(self):
+        url = f"{self.base_url}/read-web"
+        result = self.eval(
+            f"page = tools.read_web({url!r})\n"
+            "[page.url, page.text, page.truncated]"
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"][0], url)
+        self.assertIn("Reader heading", result["value"][1])
+        self.assertIn("Hello [1]linked world.", result["value"][1])
+        self.assertIn(f"[1] {self.base_url}/next", result["value"][1])
+        self.assertNotIn("<h1>", result["value"][1])
+        self.assertFalse(result["value"][2])
+        self.assertIn("w3m", LocalHttpHandler.last_request_headers["User-Agent"])
+
+    def test_read_web_reads_plain_text_pages(self):
+        url = f"{self.base_url}/read-web-plain"
+        result = self.eval(
+            f"page = tools.read_web({url!r})\n"
+            "[page.text, page.truncated]"
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], ["alpha\nbeta\n", False])
+
+    def test_read_web_truncates_output_at_max_chars(self):
+        url = f"{self.base_url}/read-web-long"
+        result = self.eval(
+            f"page = tools.read_web({url!r}, {{'max_chars': 5}})\n"
+            "[page.text, page.truncated]"
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], ["abcde", True])
+
+    def test_read_web_wraps_text_at_requested_width(self):
+        url = f"{self.base_url}/read-web-width"
+        result = self.eval(
+            f"tools.read_web({url!r}, {{'width': 10}}).text"
+        )
+
+        self.assertEqual(result["type"], "completed")
+        self.assertEqual(result["value"], "one two\nthree\nfour five\n\n")
 
 
 class HttpTests(unittest.TestCase):

@@ -212,8 +212,10 @@ including `cli`, without changing the optional `pi` bridge object.
   `max_chars` are accepted; caller headers, JavaScript, authentication,
   Chromium fallback, and other protocols are not supported. `tools.read_web`
   requests helper approval before it runs; auto-approve sessions execute it,
-  while pending mode returns `needs_approval`. Invalid URLs/options, missing
-  `w3m`, timeouts, and failed navigation become evaluation errors.
+  while pending mode returns `needs_approval`. It requests identity-encoded
+  responses and treats invalid URLs/options, missing `w3m`, timeouts, non-zero
+  exits, and zero-exit navigation diagnostics with no page text as evaluation
+  errors.
 - `fd.find(pattern='.', options=None)`: pure-Python file discovery under
   `options.root` or the session cwd. Returns paths relative to the session cwd
   unless `absolute_path` is true. Options: `root`, `type` (`file` or
@@ -428,7 +430,7 @@ via `.input()`/`.stdin_from()` is unsupported for tmux commands.
 | Command execution / builder | Partial | `run.<program>` is the preferred immediate-execution API. `cli.<program>` returns advanced builders with chainable `.cwd()`, `.input()`, `.output()`, `.env()`, `.timeout()`, capture helpers, redirects, and JSON/text/line helpers. Hostrun stream-selector syntax is not mirrored. |
 | Spawn and pipeline helpers | Partial | `.spawn()` returns process handles; tmux-backed handles reuse persistent named sessions and queue sequentially, but capture terminal-combined output and reject composed stdin. Pipeline helpers are capture-then-feed composition, not OS pipe FD streaming. |
 | HTTP and sessions | Partial | Stdlib `urllib` request builders, response helpers, `to_file`, base URL, and shared headers exist. No retry, cookie jar, TLS option, or streaming support yet. |
-| `tools.read_web` | Partial | Uses external `w3m` for static HTTP/HTTPS text extraction with numbered link references. Requires `w3m`; no JavaScript, authenticated Chromium, fallback, or caller headers. |
+| `tools.read_web` | Partial | Uses external `w3m` for static HTTP/HTTPS text extraction with numbered link references. Requests identity-encoded responses and rejects non-zero exits or zero-exit navigation diagnostics when no page text exists. Requires `w3m`; no JavaScript, authenticated Chromium, fallback, or caller headers. |
 | `rg`, `fd`, and `sqlite` wrappers | Partial | Pure-Python subsets cover common search/discovery/query flows; they are not full CLI-compatible facades. |
 | `kubectl` wrapper | Implemented | Builds `kubectl get` argv with namespace, selector, all-namespaces, name, and output options. |
 | Tool wrappers | Partial | Thin builders exist for sudo/authsudo, PowerShell, SSH, browser-cli, git, GitHub, and tmux. They do not install/probe tools and most return builders until `.run()`/`.text()`/`.json()`. |

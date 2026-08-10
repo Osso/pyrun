@@ -771,6 +771,8 @@ def build_read_web_command(
             "UTF-8",
             "-no-cookie",
             "-o",
+            "accept_encoding=identity",
+            "-o",
             "display_link_number=true",
             url,
         )
@@ -792,7 +794,10 @@ def execute_read_web_command(
         ) from error
 
     assert isinstance(result, CommandResult)
-    if result.exit_code != 0:
+    has_navigation_diagnostic = (
+        bool(result.stderr.strip()) and not result.stdout.strip()
+    )
+    if result.exit_code != 0 or has_navigation_diagnostic:
         detail = result.stderr.strip() or result.stdout.strip() or "no error output"
         raise RuntimeError(
             f"tools.read_web failed to read {url}: {detail} "

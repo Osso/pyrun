@@ -257,6 +257,23 @@ class RuntimeTests(unittest.TestCase):
                         )
                         self.assertFalse(marker.exists())
 
+    def test_read_web_rejects_empty_output_with_navigation_diagnostic(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write_python_executable(
+                Path(tmp, "w3m"),
+                "import sys\n"
+                "print('navigation diagnostic', file=sys.stderr)\n",
+            )
+            with isolated_executable_path(tmp):
+                result = self.eval("tools.read_web('https://example.test/page')")
+
+        self.assertEqual(result["type"], "error")
+        self.assertIn(
+            "tools.read_web failed to read https://example.test/page",
+            result["error"],
+        )
+        self.assertIn("navigation diagnostic", result["error"])
+
     def test_read_web_reports_missing_w3m_dependency(self):
         with tempfile.TemporaryDirectory() as tmp:
             with isolated_executable_path(tmp):
@@ -2544,6 +2561,7 @@ class ReadWebTests(unittest.TestCase):
         self.assertNotIn("<h1>", result["value"][1])
         self.assertFalse(result["value"][2])
         self.assertIn("w3m", LocalHttpHandler.last_request_headers["User-Agent"])
+        self.assertEqual(LocalHttpHandler.last_request_headers["Accept-Encoding"], "identity")
 
     def test_read_web_reads_plain_text_pages(self):
         url = f"{self.base_url}/read-web-plain"

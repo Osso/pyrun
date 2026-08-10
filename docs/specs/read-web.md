@@ -15,6 +15,7 @@ Pyrun exposes `tools.read_web(url, options=None)` for reading static HTTP/HTTPS 
 - [x] Preserve `w3m` numbered link references in rendered text, including reference lines mapping numbers to URLs.
 - [x] Truncate returned text to `max_chars` and set `truncated` to `True` only when truncation occurred.
 - [x] Read plain-text responses as text without requiring HTML markup.
+- [x] Request identity-encoded responses so returned text is renderable page content rather than a compression diagnostic.
 
 ### Approval and execution
 
@@ -23,6 +24,7 @@ Pyrun exposes `tools.read_web(url, options=None)` for reading static HTTP/HTTPS 
 - [x] Require the external `w3m` executable and report a clear error when it is unavailable.
 - [x] Enforce the configured timeout and report timeout failures with the URL and duration.
 - [x] Report non-zero `w3m` exits as read failures with available diagnostic output.
+- [x] Report zero-exit `w3m` navigation diagnostics as read failures when no page text was produced.
 
 ### Validation
 
@@ -42,7 +44,7 @@ Pyrun exposes `tools.read_web(url, options=None)` for reading static HTTP/HTTPS 
 
 ## Tests asserting this spec
 
-- `tests/test_runtime.py` — approval, defaults, validation, dependency, timeout, navigation failure, plain text, HTML links, width, truncation, and attribute access.
+- `tests/test_runtime.py` — approval, defaults, validation, dependency, timeout, zero/non-zero navigation failures, identity encoding, plain text, HTML links, width, truncation, and attribute access.
 
 ## Known gaps (current cycle)
 

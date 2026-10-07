@@ -10,6 +10,7 @@ Pyrun exposes immediate `run.*` commands and configurable `cli.*` command builde
 - [x] Default and captured builder executions remain available through `run.history()`.
 - [x] Builder configuration such as `.cwd()`, `.env()`, `.input()`, `.output()`, and `.timeout()` composes with explicit capture; `.output()` writes stdout while the command runs.
 - [x] Capture mode is visible when a configured builder is serialized.
+- [x] Explicit stdin is fed concurrently with stdout/stderr draining. An explicit timeout covers input delivery, process completion, and output draining, including inherited pipes held by same-process-group descendants on POSIX after the direct child exits.
 
 ## How it works
 

@@ -2206,9 +2206,25 @@ class CommandBuilder:
                 shell=False,
                 **command_process_options(),
             )
-            if stdin is not None and process.stdin is not None:
-                process.stdin.write(stdin)
-                process.stdin.close()
+            deadline = None if timeout is None else time.monotonic() + timeout
+
+            def remaining() -> float | None:
+                return None if deadline is None else max(0, deadline - time.monotonic())
+
+            input_errors: list[Exception] = []
+
+            def feed_stdin() -> None:
+                assert process.stdin is not None
+                try:
+                    try:
+                        process.stdin.write(stdin)
+                    finally:
+                        process.stdin.close()
+                except BrokenPipeError:
+                    # A command may finish without consuming all its input.
+                    pass
+                except Exception as error:
+                    input_errors.append(error)
 
             stdout_chunks: list[str] = []
             stderr_chunks: list[str] = []
@@ -2248,22 +2264,34 @@ class CommandBuilder:
                 )
                 thread.start()
                 threads.append(thread)
+            if stdin is not None and process.stdin is not None:
+                thread = threading.Thread(target=feed_stdin, daemon=True)
+                thread.start()
+                threads.append(thread)
             command = [self.program, *self.args]
             try:
-                returncode = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired as exc:
+                returncode = process.wait(timeout=remaining())
+                # The deadline also covers pipe I/O: descendants may retain
+                # inherited pipes even after the direct child has exited.
+                for thread in threads:
+                    thread.join(timeout=remaining())
+                    if thread.is_alive():
+                        raise subprocess.TimeoutExpired(command, timeout)
+            except BaseException as exc:
                 kill_command_process_group(process)
-                returncode = process.wait()
+                process.wait()
                 for thread in threads:
                     thread.join()
-                raise subprocess.TimeoutExpired(
-                    command,
-                    exc.timeout,
-                    output="".join(stdout_chunks),
-                    stderr="" if merge_stderr else "".join(stderr_chunks),
-                ) from exc
-            for thread in threads:
-                thread.join()
+                if isinstance(exc, subprocess.TimeoutExpired):
+                    raise subprocess.TimeoutExpired(
+                        command,
+                        timeout,
+                        output="".join(stdout_chunks),
+                        stderr="" if merge_stderr else "".join(stderr_chunks),
+                    ) from exc
+                raise
+            if input_errors:
+                raise input_errors[0]
             completed = subprocess.CompletedProcess(
                 args=command,
                 returncode=returncode,
